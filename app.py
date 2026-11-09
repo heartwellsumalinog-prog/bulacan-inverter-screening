@@ -8,7 +8,7 @@ import re
 # PAGE CONFIGURATION
 # =========================================================================
 st.set_page_config(
-    page_title="Bulacan Solar O&M Screening Dashboard",
+    page_title="Bulacan Solar - Daily Inverter Screening Report",
     page_icon="☀️",
     layout="wide"
 )
@@ -29,12 +29,8 @@ DC_CAPACITIES = {
 }
 
 # =========================================================================
-# TITLE & SIDEBAR UPLOAD
+# SIDEBAR DATA UPLOAD
 # =========================================================================
-st.title("☀️ Bulacan Solar Power Plant — Daily Inverter Screening Dashboard")
-st.markdown("**MGEN Renewables | Performance & Analytics Engineering**")
-st.markdown("---")
-
 st.sidebar.header("📁 Data Ingestion")
 uploaded_file = st.sidebar.file_uploader("Upload Daily SCADA Report (.xls / .xlsx)", type=["xls", "xlsx"])
 
@@ -47,6 +43,16 @@ if uploaded_file is not None:
 
     df_raw = load_data(uploaded_file)
     
+    # Extract Report Date from Row 0 if available (fallback to current or placeholder)
+    report_date_str = "Previous Operating Day"
+    try:
+        cell_val = str(df_raw.iloc[0, 0])
+        date_match = re.search(r'(\d{4}[-/]\d{2}[-/]\d{2}|\d{2}[-/]\d{2}[-/]\d{4})', cell_val)
+        if date_match:
+            report_date_str = date_match.group(1)
+    except Exception:
+        pass
+
     # 2. Parse Headers & Time
     inverter_names_row = df_raw.iloc[1].ffill()
     parameters_row = df_raw.iloc[2]
@@ -78,18 +84,39 @@ if uploaded_file is not None:
     df_data = df_data.dropna(subset=['TimeOffset']).sort_values('TimeOffset')
     df_data.set_index('TimeOffset', inplace=True)
 
-    # 3. Extract Active Power & Daylight Filter
+    # =========================================================================
+    # EXECUTIVE HEADER SECTION
+    # =========================================================================
+    head_col1, head_col2 = st.columns([0.15, 0.85])
+    with head_col1:
+        st.markdown("### ⚡ MGEN")
+        st.markdown("**MGEN Renewables**")
+    with head_col2:
+        st.markdown("## Bulacan Solar — Daily Inverter Screening Report")
+        st.markdown(f"**Operating Date:** {report_date_str} | **Performance & Analytics Engineering**")
+    
+    st.markdown("---")
+
+    # 3. Extract Active Power, Irradiance & Daylight Filter
     p_cols = [c for c in df_data.columns if 'P(kW)' in c]
     power_kw = df_data[p_cols].apply(pd.to_numeric, errors='coerce')
     power_kw.columns = [c.split('_')[0] for c in p_cols]
+
+    # Extract Irradiance (W/m2)
+    irr_cols = [c for c in df_data.columns if 'Irradiance' in c or 'W/m2' in c]
+    if irr_cols:
+        irradiance = pd.to_numeric(df_data[irr_cols[0]], errors='coerce').fillna(0)
+    else:
+        irradiance = pd.Series(0, index=df_data.index)
 
     hours_numeric = [td.total_seconds() / 3600.0 for td in power_kw.index]
     daylight_mask = [(6.0 <= h <= 18.0) for h in hours_numeric]
 
     power_kw_day = power_kw.loc[daylight_mask]
+    irradiance_day = irradiance.loc[daylight_mask]
     time_labels_day = [df_data.loc[td, 'TimeLabel'] for td in power_kw_day.index]
 
-    # 4. Curtailment & Robust Z-Score Engine
+    # 4. Curtailment & Robust Z-Score Engine (Threshold set to -3.5)
     total_plant_mw_day = power_kw_day.sum(axis=1) / 1000.0
     curtailment_active_mask = (total_plant_mw_day >= 54.5).to_numpy()
 
@@ -118,7 +145,8 @@ if uploaded_file is not None:
         dc_cap = DC_CAPACITIES.get(inv, 4.4505)
         deficit_series = np.clip(median_series - ratio_series, 0, None) * dc_cap * 1000.0
         
-        flag_mask = (z_series < -3.0) & valid_sun_mask & (~curtailment_active_mask)
+        # Updated anomaly threshold to -3.5
+        flag_mask = (z_series < -3.5) & valid_sun_mask & (~curtailment_active_mask)
         flags_count = flag_mask.sum()
         total_negative_anomalies += flags_count
         
@@ -129,10 +157,13 @@ if uploaded_file is not None:
         
         if flags_count > 10 or worst_z < -10:
             severity = "HIGH PRIORITY"
-        elif flags_count > 0 or worst_z < -3.0:
+            sev_rank = 1
+        elif flags_count > 0 or worst_z < -3.5:
             severity = "MONITOR"
+            sev_rank = 2
         else:
             severity = "NORMAL"
+            sev_rank = 3
             
         results.append({
             'Inverter': inv,
@@ -141,15 +172,17 @@ if uploaded_file is not None:
             'Worst Z': round(worst_z, 2),
             'Max Deficit (kW)': round(max_deficit, 1),
             'Severity': severity,
+            '_sev_rank': sev_rank,
             '_sort_flags': flags_count,
             '_sort_z': worst_z
         })
 
     res_df = pd.DataFrame(results)
-    res_df = res_df.sort_values(by=['_sort_flags', '_sort_z'], ascending=[False, True]).reset_index(drop=True)
+    # Sorted primarily by Severity Rank so High Priority is always on top
+    res_df = res_df.sort_values(by=['_sev_rank', '_sort_flags', '_sort_z'], ascending=[True, False, True]).reset_index(drop=True)
     res_df.index += 1
     res_df.index.name = 'Rank'
-    res_df = res_df.drop(columns=['_sort_flags', '_sort_z'])
+    res_df = res_df.drop(columns=['_sev_rank', '_sort_flags', '_sort_z'])
 
     top_10_df = res_df.head(10)
     top_1_inverter = top_10_df.iloc[0]['Inverter'] if len(top_10_df) > 0 else "None"
@@ -157,32 +190,45 @@ if uploaded_file is not None:
     # =========================================================================
     # METRICS DISPLAY (3 Executive Boxes)
     # =========================================================================
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total Inverters Monitored", "18 Units")
-    col2.metric("Negative Anomalies Flagged", f"{total_negative_anomalies} Intervals")
-    col3.metric("Highest Priority Unit", top_1_inverter)
+    m_col1, m_col2, m_col3 = st.columns(3)
+    m_col1.metric("Total Inverters Monitored", "18 Units")
+    m_col2.metric("Negative Anomalies Flagged (Z < -3.5)", f"{total_negative_anomalies} Intervals")
+    m_col3.metric("Highest Priority Unit", top_1_inverter)
     
     st.markdown("---")
 
     # =========================================================================
-    # DUAL-PANEL VISUALIZATION
+    # DUAL-PANEL VISUALIZATION (Plant Power & Irradiance on Right Axis)
     # =========================================================================
-    st.subheader("📈 Plant Active Power & Top 5 Performance Timeline")
+    st.subheader("📈 Plant Active Power, Irradiance & Top 5 Performance Timeline")
     
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 9), sharex=True)
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
 
-    # Panel 1: Plant Active Power & Curtailment
-    ax1.plot(time_labels_day, total_plant_mw_day, color='#1f77b4', linewidth=2.5, label='Total Plant Active Power')
+    # Panel 1: Plant Active Power (Left Axis) & Irradiance (Right Axis)
+    color_pow = '#1f77b4'
+    ax1.set_ylabel('Plant Active Power ($MW_{ac}$)', color=color_pow, fontsize=10, fontweight='bold')
+    line1 = ax1.plot(time_labels_day, total_plant_mw_day, color=color_pow, linewidth=2.5, label='Total Plant Active Power')
     ax1.axhline(y=55.0, color='red', linestyle='--', linewidth=1.5, label='Grid Export Limit (55 MWac Cap)')
     if curtailment_active_mask.any():
         ax1.fill_between(time_labels_day, 0, 55, where=curtailment_active_mask, color='red', alpha=0.12, label='Active Curtailment Window')
-
-    ax1.set_title('Plant-Wide Active Power & Grid Export Ceiling', fontsize=12, fontweight='bold')
-    ax1.set_ylabel('Plant Power ($MW_{ac}$)', fontsize=10)
+    ax1.tick_params(axis='y', labelcolor=color_pow)
     ax1.grid(True, linestyle='-', alpha=0.3)
-    ax1.legend(loc='lower right', frameon=True, fontsize=9)
 
-    # Panel 2: Clean Top 5 Timeline Plot
+    # Create secondary axis for Irradiance on the right side
+    ax1_irr = ax1.twinx()
+    color_irr = '#ff7f0e'
+    ax1_irr.set_ylabel('Irradiance ($W/m^2$)', color=color_irr, fontsize=10, fontweight='bold')
+    line2 = ax1_irr.plot(time_labels_day, irradiance_day, color=color_irr, linewidth=1.8, linestyle='-', alpha=0.85, label='Plane of Array Irradiance')
+    ax1_irr.tick_params(axis='y', labelcolor=color_irr)
+    ax1_irr.grid(False) # avoid overlapping gridlines
+
+    # Combined Legend for Panel 1
+    lines_p1 = line1 + line2 + ([ax1.get_lines()[1]] if len(ax1.get_lines()) > 1 else [])
+    labels_p1 = [l.get_label() for l in lines_p1]
+    ax1.legend(lines_p1, labels_p1, loc='lower right', frameon=True, fontsize=9)
+    ax1.set_title('Plant-Wide Active Power & Solar Irradiance Profile', fontsize=12, fontweight='bold')
+
+    # Panel 2: Clean Top 5 Inverter Timeline Plot
     ax2.plot(time_labels_day, peer_median_norm, color='black', linestyle='--', linewidth=2.2, label='Plant Peer Median Ratio', zorder=4)
 
     top_5_inverters = top_10_df.head(5)['Inverter'].tolist()
@@ -191,7 +237,7 @@ if uploaded_file is not None:
     for idx, inv in enumerate(top_5_inverters):
         norm_vals = normalized_power[inv]
         z_series = robust_z[inv].to_numpy()
-        flag_mask = (z_series < -3.0) & valid_sun_mask & (~curtailment_active_mask)
+        flag_mask = (z_series < -3.5) & valid_sun_mask & (~curtailment_active_mask)
         
         lw = 2.6 if idx == 0 else 1.2
         alpha_val = 0.95 if idx == 0 else 0.5
@@ -206,7 +252,7 @@ if uploaded_file is not None:
             flagged_vals = norm_vals[flag_mask]
             ax2.scatter(flagged_times, flagged_vals, color='#9c0006', s=50, zorder=6, marker='X', edgecolor='white', linewidth=0.5)
 
-    ax2.set_title('Top 5 Screened Inverters Capacity-Normalized Performance Ratio & Flag Timeline', fontsize=12, fontweight='bold')
+    ax2.set_title('Top 5 Screened Inverters Capacity-Normalized Performance Ratio & Flag Timeline (Z < -3.5)', fontsize=12, fontweight='bold')
     ax2.set_xlabel('Time of Day (15-Min Intervals)', fontsize=10)
     ax2.set_ylabel('Normalized Ratio ($MW_{ac} / MW_{dc}$)', fontsize=10)
 
@@ -233,8 +279,8 @@ if uploaded_file is not None:
     st.subheader("🛠️ Operational Recommendations & SOP Work-Queue")
     st.markdown("""
     * **🔴 HIGH PRIORITY (Flags > 10 or Worst Z < -10):** Immediate dispatch of O&M field team to inspect DC string fuses, inverter IGBT status, and communication card connectivity for the flagged unit.
-    * **🟡 MONITOR (0 < Flags <= 10 or -10 <= Worst Z < -3):** Log into daily engineering watch-list. Review weather logs and string-level MPPT tracking during the next routine preventive maintenance cycle.
-    * **🟢 NORMAL (Flags = 0 and Worst Z >= -3):** Normal healthy operation tracking plant-wide peer median.
+    * **🟡 MONITOR (0 < Flags <= 10 or -10 <= Worst Z < -3.5):** Log into daily engineering watch-list. Review weather logs and string-level MPPT tracking during the next routine preventive maintenance cycle.
+    * **🟢 NORMAL (Flags = 0 and Worst Z >= -3.5):** Normal healthy operation tracking plant-wide peer median.
     """)
 
 else:
