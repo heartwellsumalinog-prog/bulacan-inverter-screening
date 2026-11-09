@@ -204,7 +204,7 @@ if uploaded_file is not None:
     st.markdown("---")
 
     # =========================================================================
-    # DUAL-AXIS VISUALIZATION (Plant Power & Irradiance)
+    # DUAL-AXIS VISUALIZATION (Plant Power, Irradiance & Curtailment Window)
     # =========================================================================
     st.subheader("📈 Plant Active Power, Irradiance & Top 5 Performance Timeline")
     
@@ -214,9 +214,13 @@ if uploaded_file is not None:
     color_pow = '#1f77b4'
     ax1.set_ylabel('Plant Active Power ($MW_{ac}$)', color=color_pow, fontsize=10, fontweight='bold')
     line1 = ax1.plot(time_labels_day, total_plant_mw_day, color=color_pow, linewidth=2.5, label='Total Plant Active Power')
-    ax1.axhline(y=55.0, color='red', linestyle='--', linewidth=1.5, label='Grid Export Limit (55 MWac Cap)')
+    line_limit = ax1.axhline(y=55.0, color='red', linestyle='--', linewidth=1.5, label='Grid Export Limit (55 MWac Cap)')
+    
+    # Fill curtailment with explicit label for the legend
+    fill_curt = None
     if curtailment_active_mask.any():
-        ax1.fill_between(time_labels_day, 0, 55, where=curtailment_active_mask, color='red', alpha=0.12, label='Active Curtailment Window')
+        fill_curt = ax1.fill_between(time_labels_day, 0, 55, where=curtailment_active_mask, color='red', alpha=0.12, label='Active Curtailment Window')
+        
     ax1.tick_params(axis='y', labelcolor=color_pow)
     ax1.grid(True, linestyle='-', alpha=0.3)
 
@@ -228,7 +232,8 @@ if uploaded_file is not None:
     ax1_irr.tick_params(axis='y', labelcolor=color_irr)
     ax1_irr.grid(False)
 
-    lines_p1 = line1 + line2 + ([ax1.get_lines()[1]] if len(ax1.get_lines()) > 1 else [])
+    # Combine all 4 legend elements smoothly
+    lines_p1 = line1 + line2 + [line_limit] + ([fill_curt] if fill_curt is not None else [])
     labels_p1 = [l.get_label() for l in lines_p1]
     ax1.legend(lines_p1, labels_p1, loc='lower right', frameon=True, fontsize=9)
     ax1.set_title('Plant-Wide Active Power & Solar Irradiance Profile', fontsize=12, fontweight='bold')
