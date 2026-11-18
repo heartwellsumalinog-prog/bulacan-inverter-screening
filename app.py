@@ -227,21 +227,28 @@ if uploaded_files:
 
             fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
             
-            # Panel 1
-            ax1.plot(rec['time_labels'], rec['total_plant_mw'], color='#1f77b4', linewidth=2.5, label='Total Plant Active Power')
-            ax1.axhline(y=55.0, color='red', linestyle='--', linewidth=1.5, label='Grid Export Limit (55 MWac Cap)')
+            # Panel 1 (Dual-Axis with Legend Outside)
+            line1 = ax1.plot(rec['time_labels'], rec['total_plant_mw'], color='#1f77b4', linewidth=2.5, label='Total Plant Active Power')
+            line_limit = ax1.axhline(y=55.0, color='red', linestyle='--', linewidth=1.5, label='Grid Export Limit (55 MWac Cap)')
+            fill_curt = None
             if rec['curtailment'].any():
-                ax1.fill_between(rec['time_labels'], 0, 55, where=rec['curtailment'], color='red', alpha=0.12, label='Active Curtailment')
+                fill_curt = ax1.fill_between(rec['time_labels'], 0, 55, where=rec['curtailment'], color='red', alpha=0.12, label='Active Curtailment')
+            
             ax1.set_ylabel('Plant Power ($MW_{ac}$)', color='#1f77b4', fontweight='bold')
             ax1.grid(True, alpha=0.3)
 
             ax1_irr = ax1.twinx()
-            ax1_irr.plot(rec['time_labels'], rec['irradiance'], color='#ff7f0e', linewidth=1.8, alpha=0.85, label='Irradiance')
+            line2 = ax1_irr.plot(rec['time_labels'], rec['irradiance'], color='#ff7f0e', linewidth=1.8, alpha=0.85, label='Irradiance')
             ax1_irr.set_ylabel('Irradiance ($W/m^2$)', color='#ff7f0e', fontweight='bold')
             ax1_irr.grid(False)
+
+            # Combine legend handles for top plot and place outside
+            lines_p1 = line1 + line2 + [line_limit] + ([fill_curt] if fill_curt is not None else [])
+            labels_p1 = [l.get_label() for l in lines_p1]
+            ax1.legend(lines_p1, labels_p1, bbox_to_anchor=(1.02, 1), loc='upper left', frameon=True, fontsize=9)
             ax1.set_title(f'Plant Active Power & Irradiance — {selected_date}', fontsize=12, fontweight='bold')
 
-            # Panel 2
+            # Panel 2 (Bottom Plot with Legend Outside & Thinner Red X Markers)
             ax2.plot(rec['time_labels'], rec['peer_median'], color='black', linestyle='--', linewidth=2.2, label='Peer Median Ratio', zorder=4)
             top_5_invs = top_10_df.head(5)['Inverter'].tolist()
             palette = ['#d62728', '#7f7f7f', '#bcbd22', '#17becf', '#9467bd']
@@ -256,14 +263,15 @@ if uploaded_files:
                 if flag_mask.any():
                     flagged_labels = [rec['time_labels'][i] for i, is_flagged in enumerate(flag_mask) if is_flagged]
                     flagged_values = norm_vals.iloc[flag_mask.values].values
-                    ax2.scatter(flagged_labels, flagged_values, color='#9c0006', s=50, marker='X', zorder=6)
+                    # Refined size and thinner linewidth for clean appearance
+                    ax2.scatter(flagged_labels, flagged_values, color='#9c0006', s=30, marker='X', linewidths=0.8, zorder=6)
 
             ax2.set_xlabel('Time of Day (15-Min Intervals)', fontweight='bold')
             ax2.set_ylabel('Normalized Ratio ($MW_{ac} / MW_{dc}$)', fontweight='bold')
             ax2.set_xticks(ticks=range(0, len(rec['time_labels']), 4))
             ax2.set_xticklabels(rec['time_labels'][::4], rotation=45, ha='right')
             ax2.grid(True, alpha=0.3)
-            ax2.legend(bbox_to_anchor=(1.02, 1), loc='upper left', fontsize=9)
+            ax2.legend(bbox_to_anchor=(1.02, 1), loc='upper left', frameon=True, fontsize=9)
 
             plt.tight_layout()
             st.pyplot(fig)
@@ -273,7 +281,7 @@ if uploaded_files:
             st.dataframe(top_10_df, use_container_width=True)
 
     # -------------------------------------------------------------------------
-    # TAB 2: WEEKLY / MULTI-DAY FLEET SUMMARY (FIXED SORTING & SPACING)
+    # TAB 2: WEEKLY / MULTI-DAY FLEET SUMMARY
     # -------------------------------------------------------------------------
     with tab_weekly:
         st.subheader("📊 Fleet Multi-Day Summary & Chronic Anomaly Ranking")
@@ -294,7 +302,6 @@ if uploaded_files:
             'Total Anomaly Intervals': data['TotalIntervals']
         } for inv, data in fleet_totals.items()]
         
-        # FIXED SORTING: Prioritize Total Anomaly Intervals descending, then Days Flagged descending
         df_summary = pd.DataFrame(summary_list).sort_values(
             by=['Total Anomaly Intervals', 'Days Flagged'], 
             ascending=[False, False]
