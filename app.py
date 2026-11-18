@@ -4,8 +4,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 import re
 import os
-import io
-import base64
 
 # =========================================================================
 # PAGE CONFIGURATION
@@ -50,7 +48,6 @@ uploaded_files = st.sidebar.file_uploader(
 )
 
 if uploaded_files:
-    # Dictionary to store processed daily data
     daily_records = {}
 
     for uploaded_file in uploaded_files:
@@ -206,7 +203,6 @@ if uploaded_files:
 
     st.markdown("---")
 
-    # Navigation Tabs
     tab_daily, tab_weekly = st.tabs(["📅 Daily Screening Report", "📊 Weekly / Multi-Day Fleet Summary"])
 
     # -------------------------------------------------------------------------
@@ -221,7 +217,6 @@ if uploaded_files:
             top_10_df = rec['priority_df'].head(10)
             top_1_inv = top_10_df.iloc[0]['Inverter'] if len(top_10_df) > 0 else "None"
 
-            # Metrics
             m1, m2, m3 = st.columns(3)
             m1.metric("Total Inverters Monitored", "18 Units")
             m2.metric("Negative Anomalies Flagged", f"{rec['total_anomalies']} Intervals")
@@ -230,7 +225,6 @@ if uploaded_files:
             st.markdown("---")
             st.subheader(f"📈 Operational Profiles — {selected_date}")
 
-            # Plotting daily chart
             fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
             
             # Panel 1
@@ -247,7 +241,7 @@ if uploaded_files:
             ax1_irr.grid(False)
             ax1.set_title(f'Plant Active Power & Irradiance — {selected_date}', fontsize=12, fontweight='bold')
 
-            # Panel 2
+            # Panel 2 (FIXED SCATTER PLOT MAPPING)
             ax2.plot(rec['time_labels'], rec['peer_median'], color='black', linestyle='--', linewidth=2.2, label='Peer Median Ratio', zorder=4)
             top_5_invs = top_10_df.head(5)['Inverter'].tolist()
             palette = ['#d62728', '#7f7f7f', '#bcbd22', '#17becf', '#9467bd']
@@ -258,8 +252,12 @@ if uploaded_files:
                 flag_cnt = rec['inv_flags'][inv]
                 
                 ax2.plot(rec['time_labels'], norm_vals, linewidth=2.0 if idx==0 else 1.2, color=palette[idx], label=f"Rank {idx+1}: {inv} ({flag_cnt} flags)", zorder=2)
+                
                 if flag_mask.any():
-                    ax2.scatter([rec['time_labels'][i] for i in range(len(flag_mask)) if flag_mask[i]], norm_vals[flag_mask], color='#9c0006', s=50, marker='X', zorder=6)
+                    # FIXED: Using positional filtering instead of direct key index lookup
+                    flagged_labels = [rec['time_labels'][i] for i, is_flagged in enumerate(flag_mask) if is_flagged]
+                    flagged_values = norm_vals.iloc[flag_mask.values].values
+                    ax2.scatter(flagged_labels, flagged_values, color='#9c0006', s=50, marker='X', zorder=6)
 
             ax2.set_xlabel('Time of Day (15-Min Intervals)', fontweight='bold')
             ax2.set_ylabel('Normalized Ratio ($MW_{ac} / MW_{dc}$)', fontweight='bold')
@@ -282,7 +280,6 @@ if uploaded_files:
         st.subheader("📊 Fleet Multi-Day Summary & Chronic Anomaly Ranking")
         st.markdown("This summary aggregates all uploaded daily reports to identify chronic, recurring underperforming inverters across the fleet—supporting your weekly O&M maintenance planning.")
 
-        # Aggregate flags across all uploaded days
         fleet_totals = {}
         for date_str, rec in daily_records.items():
             for inv, f_count in rec['inv_flags'].items():
@@ -297,7 +294,6 @@ if uploaded_files:
         df_summary.index += 1
         df_summary.index.name = 'Rank'
 
-        # Display Weekly Summary Chart
         fig_sum, ax_sum = plt.subplots(figsize=(10, 5))
         bars = ax_sum.barh(df_summary['Inverter'], df_summary['DaysFlagged'], color='#1f77b4', edgecolor='black', alpha=0.85)
         ax_sum.set_xlabel('Number of Uploaded Days with Anomaly Flags', fontsize=11, fontweight='bold')
