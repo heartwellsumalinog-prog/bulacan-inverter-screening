@@ -52,7 +52,6 @@ if uploaded_files:
 
     for uploaded_file in uploaded_files:
         filename = uploaded_file.name
-        # Universal month support (Matches all 12 calendar months)
         date_match = re.search(r'((?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4})', filename, re.IGNORECASE)
         if date_match:
             report_date_str = date_match.group(1)
@@ -67,7 +66,6 @@ if uploaded_files:
             continue
 
         try:
-            # Parse Inverters
             inverter_names_row = df_raw.iloc[1].ffill()
             parameters_row = df_raw.iloc[2]
             columns = ['Time']
@@ -89,7 +87,6 @@ if uploaded_files:
             df_data = df_data.dropna(subset=['TimeOffset']).sort_values('TimeOffset')
             df_data.set_index('TimeOffset', inplace=True)
 
-            # Parse Irradiance
             df_gen = df_gen_raw.iloc[6:].copy()
             def parse_t(t_str):
                 match = re.match(r'^(\d+)Time(\d+)Minutes$', str(t_str).strip())
@@ -101,7 +98,6 @@ if uploaded_files:
             df_gen['Irradiance'] = pd.to_numeric(df_gen[17], errors='coerce').fillna(0)
             df_gen = df_gen.dropna(subset=['TimeOffset']).set_index('TimeOffset')
 
-            # Power & Daylight Filter
             p_cols = [c for c in df_data.columns if 'P(kW)' in c]
             power_kw = df_data[p_cols].apply(pd.to_numeric, errors='coerce')
             power_kw.columns = [c.split('_')[0] for c in p_cols]
@@ -113,7 +109,6 @@ if uploaded_files:
             time_labels_day = [df_data.loc[td, 'TimeLabel'] for td in power_kw_day.index]
             irradiance_day = df_gen['Irradiance'].reindex(power_kw_day.index).fillna(0)
 
-            # Curtailment & Z-Score Engine
             total_plant_mw_day = power_kw_day.sum(axis=1) / 1000.0
             curtailment_active_mask = (total_plant_mw_day >= 54.5).to_numpy()
 
@@ -129,7 +124,10 @@ if uploaded_files:
             robust_z = 0.6745 * residuals_norm.sub(residual_median_norm, axis=0).div(mad_norm, axis=0)
 
             valid_sun_mask = (peer_median_norm > 0.02).to_numpy()
-            total_sun_intervals = valid_sun_mask.sum()
+            
+            # FIXED: Define strictly eligible evaluated intervals mask (excluding curtailment)
+            eligible_intervals_mask = valid_sun_mask & (~curtailment_active_mask)
+            total_eligible_intervals = eligible_intervals_mask.sum()
 
             results = []
             total_negative_anomalies = 0
@@ -143,15 +141,21 @@ if uploaded_files:
                 dc_cap = DC_CAPACITIES.get(inv, 4.4505)
                 deficit_series = np.clip(median_series - ratio_series, 0, None) * dc_cap * 1000.0
                 
-                flag_mask = (z_series < -3.5) & valid_sun_mask & (~curtailment_active_mask)
+                # Flag mask strictly over eligible intervals
+                flag_mask = (z_series < -3.5) & eligible_intervals_mask
                 flags_count = flag_mask.sum()
                 total_negative_anomalies += flags_count
                 inv_flags_dict[inv] = flags_count
                 
-                pct_active = (flags_count / total_sun_intervals) * 100.0 if total_sun_intervals > 0 else 0.0
-                z_unconstrained = np.where(curtailment_active_mask, 0.0, z_series)
-                worst_z = z_unconstrained[valid_sun_mask].min() if valid_sun_mask.any() else 0.0
-                max_deficit = deficit_series[valid_sun_mask].max() if deficit_series[valid_sun_mask].any() else 0.0
+                # FIXED: Anomaly rate denominator uses eligible evaluated intervals instead of total sunlight
+                pct_active = (flags_count / total_eligible_intervals) * 100.0 if total_eligible_intervals > 0 else 0.0
+                
+                # FIXED: Worst Z and Max Deficit strictly evaluated over eligible intervals
+                z_eligible = z_series[eligible_intervals_mask]
+                deficit_eligible = deficit_series[eligible_intervals_mask]
+                
+                worst_z = z_eligible.min() if z_eligible.size > 0 else 0.0
+                max_deficit = deficit_eligible.max() if deficit_eligible.size > 0 else 0.0
                 
                 severity = "HIGH PRIORITY" if (flags_count > 10 or worst_z < -10) else ("MONITOR" if (flags_count > 0 or worst_z < -3.5) else "NORMAL")
                 sev_rank = 1 if severity == "HIGH PRIORITY" else (2 if severity == "MONITOR" else 3)
@@ -159,7 +163,7 @@ if uploaded_files:
                 results.append({
                     'Inverter': inv,
                     'Flags': int(flags_count),
-                    'Anomaly Rate (%)': f"{pct_active:.1f}%", # Updated column name
+                    'Anomaly Rate (%)': f"{pct_active:.1f}%",
                     'Worst Z': round(worst_z, 2),
                     'Max Deficit (kW)': round(max_deficit, 1),
                     'Severity': severity,
@@ -187,7 +191,8 @@ if uploaded_files:
                 'robust_z': robust_z,
                 'valid_sun': valid_sun_mask,
                 'curtailment': curtailment_active_mask,
-                'active_inverters_count': len(normalized_power.columns) # Dynamic count
+                'eligible_mask': eligible_intervals_mask,
+                'active_inverters_count': len(normalized_power.columns)
             }
         except Exception as e:
             st.sidebar.error(f"⚠️ Error processing columns/data in: `{filename}`. Details: {str(e)}")
@@ -226,7 +231,7 @@ if uploaded_files:
                 top_1_inv = top_10_df.iloc[0]['Inverter'] if len(top_10_df) > 0 else "None"
 
                 m1, m2, m3 = st.columns(3)
-                m1.metric("Total Inverters Monitored", f"{rec['active_inverters_count']} Units") # Dynamic count
+                m1.metric("Total Inverters Monitored", f"{rec['active_inverters_count']} Units")
                 m2.metric("Negative Anomalies Flagged", f"{rec['total_anomalies']} Intervals")
                 m3.metric("Highest Priority Unit", top_1_inv)
 
@@ -262,7 +267,7 @@ if uploaded_files:
 
                 for idx, inv in enumerate(top_5_invs):
                     norm_vals = rec['normalized_power'][inv]
-                    flag_mask = (rec['robust_z'][inv] < -3.5) & rec['valid_sun'] & (~rec['curtailment'])
+                    flag_mask = (rec['robust_z'][inv] < -3.5) & rec['eligible_mask']
                     flag_cnt = rec['inv_flags'][inv]
                     
                     ax2.plot(rec['time_labels'], norm_vals, linewidth=2.0 if idx==0 else 1.2, color=palette[idx], label=f"Rank {idx+1}: {inv} ({flag_cnt} flags)", zorder=2)
