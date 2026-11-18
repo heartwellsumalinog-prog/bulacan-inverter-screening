@@ -115,17 +115,17 @@ if uploaded_files:
             normalized_power = pd.DataFrame(index=power_kw_day.index)
             for inv in power_kw_day.columns:
                 dc_cap = DC_CAPACITIES.get(inv, 4.4505)
-                normalized_power[inv] = (power_kw_day[inv] / 1000.0) / dc_cap
+                # Handle missing individual inverter readings (NaN filling)
+                normalized_power[inv] = (power_kw_day[inv].fillna(0) / 1000.0) / dc_cap
 
             peer_median_norm = normalized_power.median(axis=1)
             residuals_norm = normalized_power.sub(peer_median_norm, axis=0)
             mad_norm = residuals_norm.abs().median(axis=1).replace(0, 1e-6).clip(lower=0.001)
             residual_median_norm = residuals_norm.median(axis=1)
             robust_z = 0.6745 * residuals_norm.sub(residual_median_norm, axis=0).div(mad_norm, axis=0)
+            robust_z = robust_z.fillna(0.0) # Safeguard against missing reading NaN propagation
 
             valid_sun_mask = (peer_median_norm > 0.02).to_numpy()
-            
-            # FIXED: Define strictly eligible evaluated intervals mask (excluding curtailment)
             eligible_intervals_mask = valid_sun_mask & (~curtailment_active_mask)
             total_eligible_intervals = eligible_intervals_mask.sum()
 
@@ -141,24 +141,38 @@ if uploaded_files:
                 dc_cap = DC_CAPACITIES.get(inv, 4.4505)
                 deficit_series = np.clip(median_series - ratio_series, 0, None) * dc_cap * 1000.0
                 
-                # Flag mask strictly over eligible intervals
-                flag_mask = (z_series < -3.5) & eligible_intervals_mask
-                flags_count = flag_mask.sum()
-                total_negative_anomalies += flags_count
+                if total_eligible_intervals == 0:
+                    # Edge case: Zero eligible intervals on this day (complete overcast/curtailment)
+                    flags_count = 0
+                    pct_active = 0.0
+                    worst_z = 0.0
+                    max_deficit = 0.0
+                    severity = "NO DATA"
+                    sev_rank = 3
+                else:
+                    flag_mask = (z_series < -3.5) & eligible_intervals_mask
+                    flags_count = flag_mask.sum()
+                    total_negative_anomalies += flags_count
+                    
+                    pct_active = (flags_count / total_eligible_intervals) * 100.0
+                    
+                    z_eligible = z_series[eligible_intervals_mask]
+                    deficit_eligible = deficit_series[eligible_intervals_mask]
+                    
+                    worst_z = z_eligible.min() if z_eligible.size > 0 else 0.0
+                    max_deficit = deficit_eligible.max() if deficit_eligible.size > 0 else 0.0
+                    
+                    if flags_count > 10 or worst_z < -10:
+                        severity = "HIGH PRIORITY"
+                        sev_rank = 1
+                    elif flags_count > 0 or worst_z < -3.5:
+                        severity = "MONITOR"
+                        sev_rank = 2
+                    else:
+                        severity = "NORMAL"
+                        sev_rank = 3
+                
                 inv_flags_dict[inv] = flags_count
-                
-                # FIXED: Anomaly rate denominator uses eligible evaluated intervals instead of total sunlight
-                pct_active = (flags_count / total_eligible_intervals) * 100.0 if total_eligible_intervals > 0 else 0.0
-                
-                # FIXED: Worst Z and Max Deficit strictly evaluated over eligible intervals
-                z_eligible = z_series[eligible_intervals_mask]
-                deficit_eligible = deficit_series[eligible_intervals_mask]
-                
-                worst_z = z_eligible.min() if z_eligible.size > 0 else 0.0
-                max_deficit = deficit_eligible.max() if deficit_eligible.size > 0 else 0.0
-                
-                severity = "HIGH PRIORITY" if (flags_count > 10 or worst_z < -10) else ("MONITOR" if (flags_count > 0 or worst_z < -3.5) else "NORMAL")
-                sev_rank = 1 if severity == "HIGH PRIORITY" else (2 if severity == "MONITOR" else 3)
                     
                 results.append({
                     'Inverter': inv,
