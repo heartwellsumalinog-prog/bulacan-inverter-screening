@@ -115,19 +115,18 @@ if uploaded_files:
             normalized_power = pd.DataFrame(index=power_kw_day.index)
             for inv in power_kw_day.columns:
                 dc_cap = DC_CAPACITIES.get(inv, 4.4505)
-                # Handle missing individual inverter readings (NaN filling)
-                normalized_power[inv] = (power_kw_day[inv].fillna(0) / 1000.0) / dc_cap
+                # STEP 1: Preserves distinction between true zero and missing measurements (no fillna(0))
+                normalized_power[inv] = (power_kw_day[inv] / 1000.0) / dc_cap
 
             peer_median_norm = normalized_power.median(axis=1)
             residuals_norm = normalized_power.sub(peer_median_norm, axis=0)
             mad_norm = residuals_norm.abs().median(axis=1).replace(0, 1e-6).clip(lower=0.001)
             residual_median_norm = residuals_norm.median(axis=1)
             robust_z = 0.6745 * residuals_norm.sub(residual_median_norm, axis=0).div(mad_norm, axis=0)
-            robust_z = robust_z.fillna(0.0) # Safeguard against missing reading NaN propagation
+            # STEP 2: Removed robust_z.fillna(0.0) to keep missing data distinct
 
             valid_sun_mask = (peer_median_norm > 0.02).to_numpy()
             eligible_intervals_mask = valid_sun_mask & (~curtailment_active_mask)
-            total_eligible_intervals = eligible_intervals_mask.sum()
 
             results = []
             total_negative_anomalies = 0
@@ -141,33 +140,41 @@ if uploaded_files:
                 dc_cap = DC_CAPACITIES.get(inv, 4.4505)
                 deficit_series = np.clip(median_series - ratio_series, 0, None) * dc_cap * 1000.0
                 
-                if total_eligible_intervals == 0:
-                    # Edge case: Zero eligible intervals on this day (complete overcast/curtailment)
+                # STEP 3: Strict per-inverter finite check for available measurements
+                inv_eligible_mask = (
+                    eligible_intervals_mask
+                    & np.isfinite(z_series)
+                    & np.isfinite(deficit_series)
+                )
+                inv_eligible_count = int(inv_eligible_mask.sum())
+
+                # STEP 4: Refined severity and statistics block
+                if inv_eligible_count == 0:
                     flags_count = 0
-                    pct_active = 0.0
-                    worst_z = 0.0
-                    max_deficit = 0.0
+                    pct_active = np.nan
+                    worst_z = np.nan
+                    max_deficit = np.nan
                     severity = "NO DATA"
-                    sev_rank = 3
+                    sev_rank = 4
+
                 else:
-                    flag_mask = (z_series < -3.5) & eligible_intervals_mask
+                    flag_mask = (z_series < -3.5) & inv_eligible_mask
                     flags_count = flag_mask.sum()
                     total_negative_anomalies += flags_count
-                    
-                    pct_active = (flags_count / total_eligible_intervals) * 100.0
-                    
-                    z_eligible = z_series[eligible_intervals_mask]
-                    deficit_eligible = deficit_series[eligible_intervals_mask]
-                    
-                    worst_z = z_eligible.min() if z_eligible.size > 0 else 0.0
-                    max_deficit = deficit_eligible.max() if deficit_eligible.size > 0 else 0.0
-                    
+
+                    pct_active = (flags_count / inv_eligible_count) * 100.0
+
+                    worst_z = z_series[inv_eligible_mask].min()
+                    max_deficit = deficit_series[inv_eligible_mask].max()
+
                     if flags_count > 10 or worst_z < -10:
                         severity = "HIGH PRIORITY"
                         sev_rank = 1
+
                     elif flags_count > 0 or worst_z < -3.5:
                         severity = "MONITOR"
                         sev_rank = 2
+
                     else:
                         severity = "NORMAL"
                         sev_rank = 3
@@ -177,13 +184,13 @@ if uploaded_files:
                 results.append({
                     'Inverter': inv,
                     'Flags': int(flags_count),
-                    'Anomaly Rate (%)': f"{pct_active:.1f}%",
-                    'Worst Z': round(worst_z, 2),
-                    'Max Deficit (kW)': round(max_deficit, 1),
+                    'Anomaly Rate (%)': f"{pct_active:.1f}%" if not np.isnan(pct_active) else "N/A",
+                    'Worst Z': round(worst_z, 2) if not np.isnan(worst_z) else "N/A",
+                    'Max Deficit (kW)': round(max_deficit, 1) if not np.isnan(max_deficit) else "N/A",
                     'Severity': severity,
                     '_sev_rank': sev_rank,
                     '_sort_flags': flags_count,
-                    '_sort_z': worst_z
+                    '_sort_z': worst_z if not np.isnan(worst_z) else 0.0
                 })
 
             res_df = pd.DataFrame(results)
@@ -281,7 +288,10 @@ if uploaded_files:
 
                 for idx, inv in enumerate(top_5_invs):
                     norm_vals = rec['normalized_power'][inv]
-                    flag_mask = (rec['robust_z'][inv] < -3.5) & rec['eligible_mask']
+                    # Respect per-inverter finite eligibility mask during scatter plotting
+                    z_series = rec['robust_z'][inv].to_numpy()
+                    inv_elig = rec['eligible_mask'] & np.isfinite(z_series) & np.isfinite(norm_vals.to_numpy())
+                    flag_mask = (z_series < -3.5) & inv_elig
                     flag_cnt = rec['inv_flags'][inv]
                     
                     ax2.plot(rec['time_labels'], norm_vals, linewidth=2.0 if idx==0 else 1.2, color=palette[idx], label=f"Rank {idx+1}: {inv} ({flag_cnt} flags)", zorder=2)
