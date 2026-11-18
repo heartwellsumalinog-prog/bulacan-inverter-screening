@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import re
 import os
 import io
+import base64
 
 # =========================================================================
 # PAGE CONFIGURATION
@@ -37,9 +38,9 @@ st.sidebar.header("📁 Data Ingestion")
 uploaded_file = st.sidebar.file_uploader("Upload Daily SCADA Report (.xls / .xlsx)", type=["xls", "xlsx"])
 
 if uploaded_file is not None:
-    # 1. Extract Operating Date from Filename (e.g. "August 06, 2026")
+    # 1. Extract Operating Date from Filename
     filename = uploaded_file.name
-    date_match = re.search(r'(August\s+\d{1,2},\s+\d{4})', filename, re.IGNORECASE)
+    date_match = re.search(r'(August\s+\d{1,2},\s+\d{4}|November\s+\d{1,2},\s+\d{4})', filename, re.IGNORECASE)
     if date_match:
         report_date_str = date_match.group(1)
     else:
@@ -207,10 +208,8 @@ if uploaded_file is not None:
     st.markdown("---")
 
     # =========================================================================
-    # DUAL-AXIS VISUALIZATION (Plant Power, Irradiance & Curtailment Window)
+    # GENERATE FIGURE FOR DISPLAY AND EXPORT
     # =========================================================================
-    st.subheader("📈 Plant Active Power, Irradiance & Top 5 Performance Timeline")
-    
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
 
     color_pow = '#1f77b4'
@@ -271,45 +270,73 @@ if uploaded_file is not None:
     ax2.legend(bbox_to_anchor=(1.02, 1), loc='upper left', frameon=True, fontsize=9)
 
     plt.tight_layout()
+    
+    # Save figure to buffer for HTML embedding
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches='tight', dpi=200)
+    buf.seek()
+    img_base64 = base64.b64encode(buf.read()).decode('utf-8')
+    
+    # Display figure in Streamlit dashboard
+    st.subheader("📈 Plant Active Power, Irradiance & Top 5 Performance Timeline")
     st.pyplot(fig)
 
     # =========================================================================
-    # TOP 10 O&M PRIORITY TABLE & PDF DOWNLOAD
+    # TOP 10 O&M PRIORITY TABLE & COMPREHENSIVE REPORT EXPORT
     # =========================================================================
     st.markdown("---")
     col_t1, col_t2 = st.columns([0.75, 0.25])
     with col_t1:
         st.subheader("📋 Fleet O&M Priority Table (Top 10 Ranked Inverters)")
     with col_t2:
-        # Generate CSV / HTML / Markdown text representation for download or simple ReportLab PDF
-        from html import escape
         html_report = f"""
         <html>
-        <head><style>body {{ font-family: Arial, sans-serif; margin: 30px; }} h2 {{ color: #d9534f; }} table {{ border-collapse: collapse; width: 100%; margin-top: 20px; }} th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }} th {{ background-color: #f2f2f2; }}</style></head>
+        <head>
+            <style>
+                body {{ font-family: Arial, sans-serif; margin: 40px; color: #333; }}
+                h2 {{ color: #d9534f; border-bottom: 2px solid #d9534f; padding-bottom: 5px; }}
+                h3 {{ color: #0056b3; margin-top: 30px; }}
+                table {{ border-collapse: collapse; width: 100%; margin-top: 15px; font-size: 14px; }}
+                th, td {{ border: 1px solid #ccc; padding: 10px; text-align: left; }}
+                th {{ background-color: #f2f2f2; }}
+                .summary-box {{ background: #f9f9f9; padding: 15px; border-left: 5px solid #0056b3; margin-bottom: 20px; }}
+                .chart-container {{ text-align: center; margin-top: 30px; }}
+                img {{ max-width: 100%; height: auto; border: 1px solid #ddd; }}
+            </style>
+        </head>
         <body>
             <h2>MGEN Renewables - Bulacan Solar Daily Inverter Screening Report</h2>
             <p><b>Operating Date:</b> {report_date_str}</p>
-            <hr>
-            <h3>Executive Summary</h3>
-            <ul>
-                <li>Total Inverters Monitored: 18 Units</li>
-                <li>Negative Anomalies Flagged (Z &lt; -3.5): {total_negative_anomalies} Intervals</li>
-                <li>Highest Priority Unit: {top_1_inverter}</li>
-            </ul>
+            
+            <div class="summary-box">
+                <h3>Executive Summary</h3>
+                <ul>
+                    <li><b>Total Inverters Monitored:</b> 18 Units</li>
+                    <li><b>Negative Anomalies Flagged (Z &lt; -3.5):</b> {total_negative_anomalies} Intervals</li>
+                    <li><b>Highest Priority Unit:</b> {top_1_inverter}</li>
+                </ul>
+            </div>
+
             <h3>Top 10 Fleet O&M Priority Table</h3>
             {top_10_df.to_html(index=True, classes='table')}
-            <br>
-            <p><i>Generated automatically via MGEN Renewables SCADA Analytics Pipeline.</i></p>
+            
+            <div class="chart-container">
+                <h3>Plant Operational Profiles & Performance Timelines</h3>
+                <img src="data:image/png;base64,{img_base64}" alt="Screening Charts"/>
+            </div>
+            
+            <br><hr>
+            <p style="font-size: 12px; color: #777;"><i>Generated automatically via MGEN Renewables SCADA Analytics Pipeline.</i></p>
         </body>
         </html>
         """
         
         st.download_button(
-            label="📥 Download Report (HTML/PDF)",
+            label="📥 Download Full Report (HTML)",
             data=html_report,
-            file_name=f"Bulacan_Solar_Screening_{report_date_str.replace(', ', '_').replace(' ', '_')}.html",
+            file_name=f"Bulacan_Solar_Screening_Report_{report_date_str.replace(', ', '_').replace(' ', '_')}.html",
             mime="text/html",
-            help="Downloads the official daily screening report for archiving and O&M record-keeping."
+            help="Downloads the comprehensive daily report including metrics, priority table, and high-resolution graphs."
         )
 
     st.dataframe(top_10_df, use_container_width=True)
