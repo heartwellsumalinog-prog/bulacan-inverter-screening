@@ -187,7 +187,7 @@ if uploaded_files:
         }
 
     # =========================================================================
-    # HEADER & VIEW SELECTOR (Daily vs Weekly Summary)
+    # HEADER & VIEW SELECTOR
     # =========================================================================
     head_col1, head_col2 = st.columns([0.22, 0.78])
     with head_col1:
@@ -241,7 +241,7 @@ if uploaded_files:
             ax1_irr.grid(False)
             ax1.set_title(f'Plant Active Power & Irradiance — {selected_date}', fontsize=12, fontweight='bold')
 
-            # Panel 2 (FIXED SCATTER PLOT MAPPING)
+            # Panel 2
             ax2.plot(rec['time_labels'], rec['peer_median'], color='black', linestyle='--', linewidth=2.2, label='Peer Median Ratio', zorder=4)
             top_5_invs = top_10_df.head(5)['Inverter'].tolist()
             palette = ['#d62728', '#7f7f7f', '#bcbd22', '#17becf', '#9467bd']
@@ -254,7 +254,6 @@ if uploaded_files:
                 ax2.plot(rec['time_labels'], norm_vals, linewidth=2.0 if idx==0 else 1.2, color=palette[idx], label=f"Rank {idx+1}: {inv} ({flag_cnt} flags)", zorder=2)
                 
                 if flag_mask.any():
-                    # FIXED: Using positional filtering instead of direct key index lookup
                     flagged_labels = [rec['time_labels'][i] for i, is_flagged in enumerate(flag_mask) if is_flagged]
                     flagged_values = norm_vals.iloc[flag_mask.values].values
                     ax2.scatter(flagged_labels, flagged_values, color='#9c0006', s=50, marker='X', zorder=6)
@@ -274,7 +273,7 @@ if uploaded_files:
             st.dataframe(top_10_df, use_container_width=True)
 
     # -------------------------------------------------------------------------
-    # TAB 2: WEEKLY / MULTI-DAY FLEET SUMMARY
+    # TAB 2: WEEKLY / MULTI-DAY FLEET SUMMARY (FIXED SORTING & SPACING)
     # -------------------------------------------------------------------------
     with tab_weekly:
         st.subheader("📊 Fleet Multi-Day Summary & Chronic Anomaly Ranking")
@@ -289,14 +288,24 @@ if uploaded_files:
                     fleet_totals[inv]['DaysFlagged'] += 1
                     fleet_totals[inv]['TotalIntervals'] += f_count
 
-        summary_list = [{'Inverter': inv, 'DaysFlagged': data['DaysFlagged'], 'TotalAnomalyIntervals': data['TotalIntervals']} for inv, data in fleet_totals.items()]
-        df_summary = pd.DataFrame(summary_list).sort_values(by='DaysFlagged', ascending=False).reset_index(drop=True)
+        summary_list = [{
+            'Inverter': inv, 
+            'Days Flagged': data['DaysFlagged'], 
+            'Total Anomaly Intervals': data['TotalIntervals']
+        } for inv, data in fleet_totals.items()]
+        
+        # FIXED SORTING: Prioritize Total Anomaly Intervals descending, then Days Flagged descending
+        df_summary = pd.DataFrame(summary_list).sort_values(
+            by=['Total Anomaly Intervals', 'Days Flagged'], 
+            ascending=[False, False]
+        ).reset_index(drop=True)
+        
         df_summary.index += 1
         df_summary.index.name = 'Rank'
 
         fig_sum, ax_sum = plt.subplots(figsize=(10, 5))
-        bars = ax_sum.barh(df_summary['Inverter'], df_summary['DaysFlagged'], color='#1f77b4', edgecolor='black', alpha=0.85)
-        ax_sum.set_xlabel('Number of Uploaded Days with Anomaly Flags', fontsize=11, fontweight='bold')
+        bars = ax_sum.barh(df_summary['Inverter'], df_summary['Total Anomaly Intervals'], color='#1f77b4', edgecolor='black', alpha=0.85)
+        ax_sum.set_xlabel('Total Cumulative Anomaly Intervals (Z < -3.5)', fontsize=11, fontweight='bold')
         ax_sum.set_ylabel('Inverter ID', fontsize=11, fontweight='bold')
         ax_sum.set_title(f'Multi-Day Fleet Chronic Anomaly Summary ({len(daily_records)} Reports Analyzed)', fontsize=12, fontweight='bold')
         ax_sum.invert_yaxis()
@@ -304,7 +313,7 @@ if uploaded_files:
 
         for bar in bars:
             width = bar.get_width()
-            ax_sum.text(width + 0.1, bar.get_y() + bar.get_height()/2, f'{int(width)} Days', va='center', ha='left', fontsize=10, fontweight='bold', color='#333333')
+            ax_sum.text(width + 0.5, bar.get_y() + bar.get_height()/2, f'{int(width)} Intervals', va='center', ha='left', fontsize=10, fontweight='bold', color='#333333')
 
         plt.tight_layout()
         st.pyplot(fig_sum)
