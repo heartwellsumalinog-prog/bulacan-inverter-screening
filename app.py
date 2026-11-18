@@ -271,40 +271,47 @@ if uploaded_file is not None:
 
     plt.tight_layout()
     
-    # Save figure to buffer for HTML embedding
+    # Save figure to buffer for embedding
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches='tight', dpi=200)
-    buf.seek(0) # FIXED: passed 0 to seek
+    buf.seek(0)
     img_base64 = base64.b64encode(buf.read()).decode('utf-8')
     
-    # Display figure in Streamlit dashboard
     st.subheader("📈 Plant Active Power, Irradiance & Top 5 Performance Timeline")
     st.pyplot(fig)
 
     # =========================================================================
-    # TOP 10 O&M PRIORITY TABLE & COMPREHENSIVE REPORT EXPORT
+    # TOP 10 O&M PRIORITY TABLE & PRINT-TO-PDF REPORT EXPORT
     # =========================================================================
     st.markdown("---")
-    col_t1, col_t2 = st.columns([0.75, 0.25])
+    col_t1, col_t2 = st.columns([0.70, 0.30])
     with col_t1:
         st.subheader("📋 Fleet O&M Priority Table (Top 10 Ranked Inverters)")
     with col_t2:
-        html_report = f"""
+        pdf_ready_html = f"""
         <html>
         <head>
             <style>
-                body {{ font-family: Arial, sans-serif; margin: 40px; color: #333; }}
+                body {{ font-family: Arial, sans-serif; margin: 30px; color: #333; }}
                 h2 {{ color: #d9534f; border-bottom: 2px solid #d9534f; padding-bottom: 5px; }}
-                h3 {{ color: #0056b3; margin-top: 30px; }}
-                table {{ border-collapse: collapse; width: 100%; margin-top: 15px; font-size: 14px; }}
-                th, td {{ border: 1px solid #ccc; padding: 10px; text-align: left; }}
+                h3 {{ color: #0056b3; margin-top: 25px; }}
+                table {{ border-collapse: collapse; width: 100%; margin-top: 15px; font-size: 13px; }}
+                th, td {{ border: 1px solid #ccc; padding: 8px; text-align: left; }}
                 th {{ background-color: #f2f2f2; }}
-                .summary-box {{ background: #f9f9f9; padding: 15px; border-left: 5px solid #0056b3; margin-bottom: 20px; }}
-                .chart-container {{ text-align: center; margin-top: 30px; }}
+                .summary-box {{ background: #f9f9f9; padding: 12px; border-left: 5px solid #0056b3; margin-bottom: 20px; }}
+                .chart-container {{ text-align: center; margin-top: 30px; page-break-inside: avoid; }}
                 img {{ max-width: 100%; height: auto; border: 1px solid #ddd; }}
+                @media print {{
+                    body {{ margin: 10px; }}
+                    .no-print {{ display: none; }}
+                }}
             </style>
         </head>
-        <body>
+        <body onload="window.print()">
+            <div class="no-print" style="background: #fff3cd; padding: 10px; margin-bottom: 20px; border: 1px solid #ffeeba; text-align: center;">
+                <b>Instructions:</b> Your print preview should open automatically. If not, press <b>Ctrl+P (Cmd+P on Mac)</b> and select <b>"Save as PDF"</b> as your destination printer.
+            </div>
+            
             <h2>MGEN Renewables - Bulacan Solar Daily Inverter Screening Report</h2>
             <p><b>Operating Date:</b> {report_date_str}</p>
             
@@ -326,18 +333,15 @@ if uploaded_file is not None:
             </div>
             
             <br><hr>
-            <p style="font-size: 12px; color: #777;"><i>Generated automatically via MGEN Renewables SCADA Analytics Pipeline.</i></p>
+            <p style="font-size: 11px; color: #777;"><i>Generated automatically via MGEN Renewables SCADA Analytics Pipeline.</i></p>
         </body>
         </html>
         """
         
-        st.download_button(
-            label="📥 Download Full Report (HTML)",
-            data=html_report,
-            file_name=f"Bulacan_Solar_Screening_Report_{report_date_str.replace(', ', '_').replace(' ', '_')}.html",
-            mime="text/html",
-            help="Downloads the comprehensive daily report including metrics, priority table, and high-resolution graphs."
-        )
+        # Encode HTML into a data URI for clean browser tab opening
+        b64_html = base64.b64encode(pdf_ready_html.encode('utf-8')).decode('utf-8')
+        href = f'<a href="data:text/html;base64,{b64_html}" target="_blank" style="text-decoration:none;"><button style="background-color:#d9534f; color:white; padding:10px 18px; border:none; border-radius:4px; font-weight:bold; cursor:pointer; width:100%;">🖨️ Open & Save as PDF</button></a>'
+        st.markdown(href, unsafe_allow_html=True)
 
     st.dataframe(top_10_df, use_container_width=True)
 
