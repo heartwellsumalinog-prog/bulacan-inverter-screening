@@ -274,7 +274,7 @@ if uploaded_file is not None:
     # Save figure to buffer for HTML embedding
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches='tight', dpi=200)
-    buf.seek()
+    buf.seek(0) # FIXED: passed 0 to seek
     img_base64 = base64.b64encode(buf.read()).decode('utf-8')
     
     # Display figure in Streamlit dashboard
