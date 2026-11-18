@@ -1,103 +1,339 @@
-        generating = flags & p[inv].gt(0)
-        count, valid = int(flags.sum()), int(eligible.sum())
-        worst = z.loc[eligible, inv].min()
-        if count > HIGH_FLAGS or worst < EXTREME_Z:
-            severity, rank = 'HIGH PRIORITY', 1
-        elif count > 0:
-            severity, rank = 'MONITOR', 2
-        elif valid < min_daily:
-            severity, rank = 'INSUFFICIENT DATA', 4
+import streamlit as st
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import re
+import os
+
+# =========================================================================
+# PAGE CONFIGURATION
+# =========================================================================
+st.set_page_config(
+    page_title="Bulacan Solar - Fleet Inverter Screening Platform",
+    page_icon="☀️",
+    layout="wide"
+)
+
+# =========================================================================
+# EQUIPMENT CAPACITY LOOKUP TABLE
+# =========================================================================
+DC_CAPACITIES = {
+    'Inverter1-1': 4.4892, 'Inverter1-2': 4.4892,
+    'Inverter2-1': 4.4892, 'Inverter2-2': 4.4892,
+    'Inverter3-1': 4.1022, 'Inverter3-2': 4.4892,
+    'Inverter4-1': 4.4763, 'Inverter4-2': 4.4892,
+    'Inverter5-1': 4.4892, 'Inverter5-2': 4.4505,
+    'Inverter6-1': 4.4505, 'Inverter6-2': 4.4505,
+    'Inverter7-1': 4.4634, 'Inverter7-2': 4.4505,
+    'Inverter8-1': 4.4505, 'Inverter8-2': 4.4505,
+    'Inverter9-1': 4.4505, 'Inverter9-2': 4.4505
+}
+
+def parse_time_str(t_str):
+    match = re.match(r'^(\d+)Time(\d+)Minutes$', str(t_str).strip())
+    if match:
+        hour = int(match.group(1))
+        minute = int(match.group(2))
+        return pd.Timedelta(hours=hour, minutes=minute), f"{hour:02d}:{minute:02d}"
+    return pd.NaT, None
+
+# =========================================================================
+# SIDEBAR MULTI-FILE UPLOAD
+# =========================================================================
+st.sidebar.header("📁 Fleet Data Ingestion")
+uploaded_files = st.sidebar.file_uploader(
+    "Upload Daily SCADA Reports (.xls / .xlsx)", 
+    type=["xls", "xlsx"], 
+    accept_multiple_files=True
+)
+
+if uploaded_files:
+    daily_records = {}
+
+    for uploaded_file in uploaded_files:
+        filename = uploaded_file.name
+        # Universal month support (Matches all 12 calendar months)
+        date_match = re.search(r'((?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4})', filename, re.IGNORECASE)
+        if date_match:
+            report_date_str = date_match.group(1)
         else:
-            severity, rank = 'NORMAL', 3
-        rows.append({'Inverter':inv, 'Flags':count, 'Zero-output flags':int(zero.sum()), 'Nonzero-output flags':int(generating.sum()), 'Eligible intervals':valid, 'Anomaly Rate (%)':100*count/valid if valid else np.nan, 'Worst Z':worst, 'Max Deficit (kW)':deficit.loc[eligible,inv].max(), 'Flagged Energy Gap (kWh)':deficit.loc[flags,inv].sum()*0.25 if valid else np.nan, 'Severity':severity, 'Coverage': 'Limited' if valid < min_daily else 'Meets minimum', '_rank':rank})
-        details.append(pd.DataFrame({'Time':p.index, 'Inverter':inv,'AC Power (kW)':p[inv].values,'Normalized Ratio':norm[inv].values,'Fleet Median':median.values,'MAD':mad.values,'Robust Z':z[inv].values,'Eligible':eligible.values,'Flag':flags.values,'Zero-output flag':zero.values,'Nonzero-output flag':generating.values,'Peer Deficit (kW)':deficit[inv].values}))
-    ranked = pd.DataFrame(rows).sort_values(['_rank','Flags','Worst Z','Inverter'], ascending=[True,False,True,True]).drop(columns='_rank').reset_index(drop=True)
-    ranked.index = ranked.index+1
-    ranked.index.name='Rank'
-    return ranked, pd.concat(details, ignore_index=True), p, norm, median, total_mw, high
+            report_date_str = filename.replace('.xls', '').replace('.xlsx', '')
 
-def csv(df, index=False):
-    return df.to_csv(index=index).encode('utf-8-sig')
-
-def main():
-    st.set_page_config(page_title='Bulacan Solar — Fleet Inverter Screening', page_icon='☀️', layout='wide')
-    left,right=st.columns([1,4])
-    with left:
-        if Path('mgen_logo.png').exists(): st.image('mgen_logo.png',width=180)
-        else: st.markdown('**MGEN Renewables**')
-    with right:
-        st.title('Bulacan Solar — Fleet Inverter Screening Platform')
-    st.sidebar.header('Fleet data ingestion')
-    files=st.sidebar.file_uploader('Daily SCADA reports (.xls / .xlsx)',type=['xls','xlsx'],accept_multiple_files=True)
-    st.sidebar.caption(f'Flag: Z < {FLAG_Z}; High Priority: > {HIGH_FLAGS} flags or Z < {EXTREME_Z}.')
-    st.sidebar.caption(f'Proposed minimum daily coverage: {MIN_DAILY_INTERVALS} eligible intervals; minimum other peers: {MIN_VALID_PEERS}.')
-    if not files:
-        st.info('Upload daily SCADA reports to begin.'); return
-    records={}
-    for file in files:
         try:
-            date=report_date(file.name)
-            if date in records: raise ValueError('Duplicate operating date; first successful report retained.')
-            p,irr=read_report(file)
-            rec=screen(p)
-            records[date]=(rec,irr)
-            missing=p.columns[p.isna().all()].tolist()
-            if missing: st.warning(f'{date}: missing inverter data: {", ".join(missing)}. Fleet total eligibility may be unavailable.')
+            df_raw = pd.read_excel(uploaded_file, sheet_name="Inverter Generation Report", header=None)
+            df_gen_raw = pd.read_excel(uploaded_file, sheet_name="Generation Report", header=None)
         except Exception as e:
-            st.error(f'{file.name}: {e}')
-    if not records: st.stop()
-    dates=sorted(records)
-    st.caption(f'{len(dates)} daily reports loaded | {dates[0]} to {dates[-1]}')
-    daily,multi=st.tabs(['Daily Screening Report','Weekly / Multi-Day Fleet Summary'])
-    with daily:
-        date=st.selectbox('Operating date',dates,index=len(dates)-1)
-        (ranked,detail,p,norm,median,total,high),irr=records[date]
-        priority=ranked.loc[ranked.Severity.isin(['HIGH PRIORITY','MONITOR'])]
-        a,b,c,d=st.columns(4)
-        a.metric('Inverters screened',f'{int(ranked["Eligible intervals"].gt(0).sum())}/18')
-        b.metric('Anomaly flags',int(ranked.Flags.sum()))
-        c.metric('Nonzero-output flags',int(ranked['Nonzero-output flags'].sum()))
-        d.metric('Top investigation priority',priority.iloc[0].Inverter if not priority.empty else 'None')
-        st.caption('Nonzero-output flags indicate measured generation, not independently confirmed online status or post-restoration operation.')
-        x=p.index.total_seconds()/3600
-        fig,(ax1,ax2)=plt.subplots(2,1,figsize=(12,8),sharex=True)
-        ax1.plot(x,total,label='Sum of inverter AC power (MW)')
-        ax1.axhline(55,color='red',ls='--',label='55 MW reference')
-        ax1.fill_between(x,0,55,where=high.to_numpy(),alpha=.12,color='red',label='Excluded high-output intervals')
-        ax1.set_ylabel('MW'); ax1.legend(loc='upper left'); ax1.grid(alpha=.3)
-        if irr.notna().any():
-            twin=ax1.twinx(); twin.plot(x,irr.reindex(p.index),color='orange',alpha=.7); twin.set_ylabel('Irradiance (W/m²)')
-        ax2.plot(x,median,'k--',label='Fleet median')
-        selected=st.multiselect('Inverters to plot',list(DC_CAPACITIES),default=ranked.head(5).Inverter.tolist())
-        for inv in selected:
-            ax2.plot(x,norm[inv],label=inv)
-            mask=detail.loc[detail.Inverter.eq(inv),'Flag'].to_numpy()
-            ax2.scatter(x[mask],norm[inv].to_numpy()[mask],marker='x',color='darkred',s=25)
-        ax2.set_ylabel('MWac / MWdc'); ax2.set_xlabel('Hour of day'); ax2.set_xticks(range(6,19));ax2.grid(alpha=.3);ax2.legend(loc='upper left',bbox_to_anchor=(1,1));fig.tight_layout();st.pyplot(fig);plt.close(fig)
-        st.subheader('Fleet O&M priority table')
-        st.dataframe(ranked.round(2),use_container_width=True)
-        st.caption('Energy gap is estimated from flagged 15-minute samples only; not verified recoverable energy. Limited coverage does not suppress observed anomalies.')
-        st.download_button('Download daily rankings',csv(ranked,True),f'{date}_rankings.csv','text/csv')
-        detail['Time']=detail.Time.map(lambda t:f'{int(t.total_seconds()//3600):02d}:{int(t.total_seconds()//60%60):02d}')
-        st.subheader('Flagged timestamps')
-        st.dataframe(detail.loc[detail.Flag].round(4),use_container_width=True)
-        st.download_button('Download interval audit data',csv(detail),f'{date}_intervals.csv','text/csv')
-    with multi:
-        frames=[records[d][0][0].assign(Date=d) for d in dates]
-        all_days=pd.concat(frames,ignore_index=True)
-        summary=all_days.groupby('Inverter').agg(**{'Days Flagged':('Flags',lambda x:int(x.gt(0).sum())), 'Days Screened':('Eligible intervals',lambda x:int(x.gt(0).sum())), 'Days Nonzero-output Flagged':('Nonzero-output flags',lambda x:int(x.gt(0).sum())), 'Total Anomaly Intervals':('Flags','sum'), 'Zero-output Flags':('Zero-output flags','sum'), 'Nonzero-output Flags':('Nonzero-output flags','sum'), 'Eligible Intervals':('Eligible intervals','sum'), 'Worst Z':('Worst Z','min'), 'Flagged Energy Gap (kWh)':('Flagged Energy Gap (kWh)',lambda x:x.sum(min_count=1))}).reset_index()
-        summary['Anomaly Rate (%)']=100*summary['Total Anomaly Intervals']/summary['Eligible Intervals'].replace(0,np.nan)
-        summary=summary.sort_values(['Total Anomaly Intervals','Days Flagged','Inverter'],ascending=[False,False,True]).reset_index(drop=True)
-        summary.index+=1;summary.index.name='Rank'
-        st.subheader('Cumulative fleet anomaly ranking')
-        st.bar_chart(summary.set_index('Inverter')[['Zero-output Flags','Nonzero-output Flags']],horizontal=True,stack=True)
-        st.dataframe(summary.round(2),use_container_width=True)
-        st.download_button('Download multi-day rankings',csv(summary,True),'fleet_summary.csv','text/csv')
-        st.subheader('Daily nonzero-output anomaly history')
-        history=all_days.pivot(index='Inverter',columns='Date',values='Nonzero-output flags')
-        coverage=all_days.pivot(index='Inverter',columns='Date',values='Eligible intervals')
-        st.dataframe(history.where(coverage.gt(0)),use_container_width=True)
-        st.caption('Ranking covers uploaded dates only, which may not be consecutive. Blank history cells indicate no eligible observations.')
+            st.sidebar.error(f"❌ Failed to parse file: `{filename}`. Error: {str(e)}")
+            continue
 
-if __name__=='__main__':
-    main()
+        try:
+            # Parse Inverters
+            inverter_names_row = df_raw.iloc[1].ffill()
+            parameters_row = df_raw.iloc[2]
+            columns = ['Time']
+            for col_idx in range(1, df_raw.shape[1]):
+                columns.append(f"{inverter_names_row.iloc[col_idx]}_{parameters_row.iloc[col_idx]}")
+
+            df_data = df_raw.iloc[3:].copy()
+            df_data.columns = columns
+            df_data = df_data.dropna(subset=['Time'])
+
+            time_deltas, time_labels = [], []
+            for t in df_data['Time']:
+                td, tl = parse_time_str(t)
+                time_deltas.append(td)
+                time_labels.append(tl)
+
+            df_data['TimeOffset'] = time_deltas
+            df_data['TimeLabel'] = time_labels
+            df_data = df_data.dropna(subset=['TimeOffset']).sort_values('TimeOffset')
+            df_data.set_index('TimeOffset', inplace=True)
+
+            # Parse Irradiance
+            df_gen = df_gen_raw.iloc[6:].copy()
+            def parse_t(t_str):
+                match = re.match(r'^(\d+)Time(\d+)Minutes$', str(t_str).strip())
+                if match:
+                    return pd.Timedelta(hours=int(match.group(1)), minutes=int(match.group(2)))
+                return pd.NaT
+
+            df_gen['TimeOffset'] = df_gen[0].apply(parse_t)
+            df_gen['Irradiance'] = pd.to_numeric(df_gen[17], errors='coerce').fillna(0)
+            df_gen = df_gen.dropna(subset=['TimeOffset']).set_index('TimeOffset')
+
+            # Power & Daylight Filter
+            p_cols = [c for c in df_data.columns if 'P(kW)' in c]
+            power_kw = df_data[p_cols].apply(pd.to_numeric, errors='coerce')
+            power_kw.columns = [c.split('_')[0] for c in p_cols]
+
+            hours_numeric = [td.total_seconds() / 3600.0 for td in power_kw.index]
+            daylight_mask = [(6.0 <= h <= 18.0) for h in hours_numeric]
+
+            power_kw_day = power_kw.loc[daylight_mask]
+            time_labels_day = [df_data.loc[td, 'TimeLabel'] for td in power_kw_day.index]
+            irradiance_day = df_gen['Irradiance'].reindex(power_kw_day.index).fillna(0)
+
+            # Curtailment & Z-Score Engine
+            total_plant_mw_day = power_kw_day.sum(axis=1) / 1000.0
+            curtailment_active_mask = (total_plant_mw_day >= 54.5).to_numpy()
+
+            normalized_power = pd.DataFrame(index=power_kw_day.index)
+            for inv in power_kw_day.columns:
+                dc_cap = DC_CAPACITIES.get(inv, 4.4505)
+                normalized_power[inv] = (power_kw_day[inv] / 1000.0) / dc_cap
+
+            peer_median_norm = normalized_power.median(axis=1)
+            residuals_norm = normalized_power.sub(peer_median_norm, axis=0)
+            mad_norm = residuals_norm.abs().median(axis=1).replace(0, 1e-6).clip(lower=0.001)
+            residual_median_norm = residuals_norm.median(axis=1)
+            robust_z = 0.6745 * residuals_norm.sub(residual_median_norm, axis=0).div(mad_norm, axis=0)
+
+            valid_sun_mask = (peer_median_norm > 0.02).to_numpy()
+            total_sun_intervals = valid_sun_mask.sum()
+
+            results = []
+            total_negative_anomalies = 0
+            inv_flags_dict = {}
+
+            for inv in normalized_power.columns:
+                z_series = robust_z[inv].to_numpy()
+                ratio_series = normalized_power[inv].to_numpy()
+                median_series = peer_median_norm.to_numpy()
+                
+                dc_cap = DC_CAPACITIES.get(inv, 4.4505)
+                deficit_series = np.clip(median_series - ratio_series, 0, None) * dc_cap * 1000.0
+                
+                flag_mask = (z_series < -3.5) & valid_sun_mask & (~curtailment_active_mask)
+                flags_count = flag_mask.sum()
+                total_negative_anomalies += flags_count
+                inv_flags_dict[inv] = flags_count
+                
+                pct_active = (flags_count / total_sun_intervals) * 100.0 if total_sun_intervals > 0 else 0.0
+                z_unconstrained = np.where(curtailment_active_mask, 0.0, z_series)
+                worst_z = z_unconstrained[valid_sun_mask].min() if valid_sun_mask.any() else 0.0
+                max_deficit = deficit_series[valid_sun_mask].max() if deficit_series[valid_sun_mask].any() else 0.0
+                
+                severity = "HIGH PRIORITY" if (flags_count > 10 or worst_z < -10) else ("MONITOR" if (flags_count > 0 or worst_z < -3.5) else "NORMAL")
+                sev_rank = 1 if severity == "HIGH PRIORITY" else (2 if severity == "MONITOR" else 3)
+                    
+                results.append({
+                    'Inverter': inv,
+                    'Flags': int(flags_count),
+                    'Anomaly Rate (%)': f"{pct_active:.1f}%", # Updated column name
+                    'Worst Z': round(worst_z, 2),
+                    'Max Deficit (kW)': round(max_deficit, 1),
+                    'Severity': severity,
+                    '_sev_rank': sev_rank,
+                    '_sort_flags': flags_count,
+                    '_sort_z': worst_z
+                })
+
+            res_df = pd.DataFrame(results)
+            res_df = res_df.sort_values(by=['_sev_rank', '_sort_flags', '_sort_z'], ascending=[True, False, True]).reset_index(drop=True)
+            res_df.index += 1
+            res_df.index.name = 'Rank'
+            res_df = res_df.drop(columns=['_sev_rank', '_sort_flags', '_sort_z'])
+
+            daily_records[report_date_str] = {
+                'priority_df': res_df,
+                'total_anomalies': total_negative_anomalies,
+                'inv_flags': inv_flags_dict,
+                'power_df': power_kw_day,
+                'total_plant_mw': total_plant_mw_day,
+                'time_labels': time_labels_day,
+                'irradiance': irradiance_day,
+                'peer_median': peer_median_norm,
+                'normalized_power': normalized_power,
+                'robust_z': robust_z,
+                'valid_sun': valid_sun_mask,
+                'curtailment': curtailment_active_mask,
+                'active_inverters_count': len(normalized_power.columns) # Dynamic count
+            }
+        except Exception as e:
+            st.sidebar.error(f"⚠️ Error processing columns/data in: `{filename}`. Details: {str(e)}")
+            continue
+
+    if daily_records:
+        # =========================================================================
+        # HEADER & VIEW SELECTOR
+        # =========================================================================
+        head_col1, head_col2 = st.columns([0.22, 0.78])
+        with head_col1:
+            logo_path = "mgen_logo.png"
+            if os.path.exists(logo_path):
+                st.image(logo_path, width=180)
+            else:
+                st.markdown("### ⚡ MGEN Renewables")
+                
+        with head_col2:
+            st.markdown("## Bulacan Solar — Fleet Inverter Screening Platform")
+            st.markdown(f"**Loaded Files:** {len(daily_records)} Daily Reports")
+
+        st.markdown("---")
+
+        tab_daily, tab_weekly = st.tabs(["📅 Daily Screening Report", "📊 Weekly / Multi-Day Fleet Summary"])
+
+        # -------------------------------------------------------------------------
+        # TAB 1: DAILY REPORT VIEW
+        # -------------------------------------------------------------------------
+        with tab_daily:
+            available_dates = list(daily_records.keys())
+            selected_date = st.selectbox("Select Operating Date to View:", available_dates)
+
+            if selected_date:
+                rec = daily_records[selected_date]
+                top_10_df = rec['priority_df'].head(10)
+                top_1_inv = top_10_df.iloc[0]['Inverter'] if len(top_10_df) > 0 else "None"
+
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Total Inverters Monitored", f"{rec['active_inverters_count']} Units") # Dynamic count
+                m2.metric("Negative Anomalies Flagged", f"{rec['total_anomalies']} Intervals")
+                m3.metric("Highest Priority Unit", top_1_inv)
+
+                st.markdown("---")
+                st.subheader(f"📈 Operational Profiles — {selected_date}")
+
+                fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
+                
+                # Panel 1
+                line1 = ax1.plot(rec['time_labels'], rec['total_plant_mw'], color='#1f77b4', linewidth=2.5, label='Total Plant Active Power')
+                line_limit = ax1.axhline(y=55.0, color='red', linestyle='--', linewidth=1.5, label='Grid Export Limit (55 MWac Cap)')
+                fill_curt = None
+                if rec['curtailment'].any():
+                    fill_curt = ax1.fill_between(rec['time_labels'], 0, 55, where=rec['curtailment'], color='red', alpha=0.12, label='Active Curtailment')
+                
+                ax1.set_ylabel('Plant Power ($MW_{ac}$)', color='#1f77b4', fontweight='bold')
+                ax1.grid(True, alpha=0.3)
+
+                ax1_irr = ax1.twinx()
+                line2 = ax1_irr.plot(rec['time_labels'], rec['irradiance'], color='#ff7f0e', linewidth=1.8, alpha=0.85, label='Irradiance')
+                ax1_irr.set_ylabel('Irradiance ($W/m^2$)', color='#ff7f0e', fontweight='bold')
+                ax1_irr.grid(False)
+
+                lines_p1 = line1 + line2 + [line_limit] + ([fill_curt] if fill_curt is not None else [])
+                labels_p1 = [l.get_label() for l in lines_p1]
+                ax1.legend(lines_p1, labels_p1, bbox_to_anchor=(1.02, 1), loc='upper left', frameon=True, fontsize=9)
+                ax1.set_title(f'Plant Active Power & Irradiance — {selected_date}', fontsize=12, fontweight='bold')
+
+                # Panel 2
+                ax2.plot(rec['time_labels'], rec['peer_median'], color='black', linestyle='--', linewidth=2.2, label='Peer Median Ratio', zorder=4)
+                top_5_invs = top_10_df.head(5)['Inverter'].tolist()
+                palette = ['#d62728', '#7f7f7f', '#bcbd22', '#17becf', '#9467bd']
+
+                for idx, inv in enumerate(top_5_invs):
+                    norm_vals = rec['normalized_power'][inv]
+                    flag_mask = (rec['robust_z'][inv] < -3.5) & rec['valid_sun'] & (~rec['curtailment'])
+                    flag_cnt = rec['inv_flags'][inv]
+                    
+                    ax2.plot(rec['time_labels'], norm_vals, linewidth=2.0 if idx==0 else 1.2, color=palette[idx], label=f"Rank {idx+1}: {inv} ({flag_cnt} flags)", zorder=2)
+                    
+                    if flag_mask.any():
+                        flagged_labels = [rec['time_labels'][i] for i, is_flagged in enumerate(flag_mask) if is_flagged]
+                        flagged_values = norm_vals.iloc[flag_mask.values].values
+                        ax2.scatter(flagged_labels, flagged_values, color='#9c0006', s=30, marker='X', linewidths=0.8, zorder=6)
+
+                ax2.set_xlabel('Time of Day (15-Min Intervals)', fontweight='bold')
+                ax2.set_ylabel('Normalized Ratio ($MW_{ac} / MW_{dc}$)', fontweight='bold')
+                ax2.set_xticks(ticks=range(0, len(rec['time_labels']), 4))
+                ax2.set_xticklabels(rec['time_labels'][::4], rotation=45, ha='right')
+                ax2.grid(True, alpha=0.3)
+                ax2.legend(bbox_to_anchor=(1.02, 1), loc='upper left', frameon=True, fontsize=9)
+
+                plt.tight_layout()
+                st.pyplot(fig)
+
+                st.markdown("---")
+                st.subheader("📋 Fleet O&M Priority Table")
+                st.dataframe(top_10_df, use_container_width=True)
+
+        # -------------------------------------------------------------------------
+        # TAB 2: WEEKLY / MULTI-DAY FLEET SUMMARY
+        # -------------------------------------------------------------------------
+        with tab_weekly:
+            st.subheader("📊 Fleet Multi-Day Summary & Chronic Anomaly Ranking")
+            st.markdown("This summary aggregates all uploaded daily reports to identify chronic, recurring underperforming inverters across the fleet—supporting your weekly O&M maintenance planning.")
+
+            fleet_totals = {}
+            for date_str, rec in daily_records.items():
+                for inv, f_count in rec['inv_flags'].items():
+                    if inv not in fleet_totals:
+                        fleet_totals[inv] = {'DaysFlagged': 0, 'TotalIntervals': 0}
+                    if f_count > 0:
+                        fleet_totals[inv]['DaysFlagged'] += 1
+                        fleet_totals[inv]['TotalIntervals'] += f_count
+
+            summary_list = [{
+                'Inverter': inv, 
+                'Days Flagged': data['DaysFlagged'], 
+                'Total Anomaly Intervals': data['TotalIntervals']
+            } for inv, data in fleet_totals.items()]
+            
+            df_summary = pd.DataFrame(summary_list).sort_values(
+                by=['Total Anomaly Intervals', 'Days Flagged'], 
+                ascending=[False, False]
+            ).reset_index(drop=True)
+            
+            df_summary.index += 1
+            df_summary.index.name = 'Rank'
+
+            fig_sum, ax_sum = plt.subplots(figsize=(10, 5))
+            bars = ax_sum.barh(df_summary['Inverter'], df_summary['Total Anomaly Intervals'], color='#1f77b4', edgecolor='black', alpha=0.85)
+            ax_sum.set_xlabel('Total Cumulative Anomaly Intervals (Z < -3.5)', fontsize=11, fontweight='bold')
+            ax_sum.set_ylabel('Inverter ID', fontsize=11, fontweight='bold')
+            ax_sum.set_title(f'Multi-Day Fleet Chronic Anomaly Summary ({len(daily_records)} Reports Analyzed)', fontsize=12, fontweight='bold')
+            ax_sum.invert_yaxis()
+            ax_sum.grid(axis='x', linestyle='--', alpha=0.5)
+
+            for bar in bars:
+                width = bar.get_width()
+                ax_sum.text(width + 0.5, bar.get_y() + bar.get_height()/2, f'{int(width)} Intervals', va='center', ha='left', fontsize=10, fontweight='bold', color='#333333')
+
+            plt.tight_layout()
+            st.pyplot(fig_sum)
+
+            st.markdown("### 📋 Cumulative Fleet Summary Table")
+            st.dataframe(df_summary, use_container_width=True)
+    else:
+        st.warning("⚠️ No valid daily reports were successfully parsed from the uploaded files.")
+else:
+    st.info("👈 Please upload multiple daily SCADA report Excel files in the sidebar to activate the multi-day fleet platform and weekly summary analytics.")
