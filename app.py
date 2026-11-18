@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import re
 import os
+import io
 
 # =========================================================================
 # PAGE CONFIGURATION
@@ -36,13 +37,12 @@ st.sidebar.header("📁 Data Ingestion")
 uploaded_file = st.sidebar.file_uploader("Upload Daily SCADA Report (.xls / .xlsx)", type=["xls", "xlsx"])
 
 if uploaded_file is not None:
-    # 1. Extract Operating Date from Filename (e.g. "August 07, 2026")
+    # 1. Extract Operating Date from Filename (e.g. "August 06, 2026")
     filename = uploaded_file.name
     date_match = re.search(r'(August\s+\d{1,2},\s+\d{4})', filename, re.IGNORECASE)
     if date_match:
         report_date_str = date_match.group(1)
     else:
-        # Fallback if filename doesn't match standard naming
         report_date_str = filename.replace('.xls', '').replace('.xlsx', '')
 
     # 2. Load Data
@@ -98,16 +98,15 @@ if uploaded_file is not None:
     df_gen = df_gen.dropna(subset=['TimeOffset']).set_index('TimeOffset')
 
     # =========================================================================
-    # EXECUTIVE HEADER SECTION (Logo on left, Title center, Date bottom-left)
+    # EXECUTIVE HEADER SECTION
     # =========================================================================
     head_col1, head_col2 = st.columns([0.22, 0.78])
     with head_col1:
-        logo_path = "mgen_logo.png"  # Make sure your logo image is uploaded to GitHub with this filename
+        logo_path = "mgen_logo.png"
         if os.path.exists(logo_path):
             st.image(logo_path, width=180)
         else:
             st.markdown("### ⚡ MGEN Renewables")
-            st.warning("⚠️ Logo image `mgen_logo.png` not found in GitHub repository.")
             
     with head_col2:
         st.markdown("## Bulacan Solar — Daily Inverter Screening Report")
@@ -214,7 +213,6 @@ if uploaded_file is not None:
     
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
 
-    # Panel 1: Plant Active Power (Left Axis) & Irradiance (Right Axis)
     color_pow = '#1f77b4'
     ax1.set_ylabel('Plant Active Power ($MW_{ac}$)', color=color_pow, fontsize=10, fontweight='bold')
     line1 = ax1.plot(time_labels_day, total_plant_mw_day, color=color_pow, linewidth=2.5, label='Total Plant Active Power')
@@ -227,7 +225,6 @@ if uploaded_file is not None:
     ax1.tick_params(axis='y', labelcolor=color_pow)
     ax1.grid(True, linestyle='-', alpha=0.3)
 
-    # Secondary Axis for Irradiance
     ax1_irr = ax1.twinx()
     color_irr = '#ff7f0e'
     ax1_irr.set_ylabel('Irradiance ($W/m^2$)', color=color_irr, fontsize=10, fontweight='bold')
@@ -240,7 +237,6 @@ if uploaded_file is not None:
     ax1.legend(lines_p1, labels_p1, loc='lower right', frameon=True, fontsize=9)
     ax1.set_title('Plant-Wide Active Power & Solar Irradiance Profile', fontsize=12, fontweight='bold')
 
-    # Panel 2: Top 5 Inverter Timeline Plot
     ax2.plot(time_labels_day, peer_median_norm, color='black', linestyle='--', linewidth=2.2, label='Plant Peer Median Ratio', zorder=4)
 
     top_5_inverters = top_10_df.head(5)['Inverter'].tolist()
@@ -278,10 +274,44 @@ if uploaded_file is not None:
     st.pyplot(fig)
 
     # =========================================================================
-    # TOP 10 O&M PRIORITY TABLE
+    # TOP 10 O&M PRIORITY TABLE & PDF DOWNLOAD
     # =========================================================================
     st.markdown("---")
-    st.subheader("📋 Fleet O&M Priority Table (Top 10 Ranked Inverters)")
+    col_t1, col_t2 = st.columns([0.75, 0.25])
+    with col_t1:
+        st.subheader("📋 Fleet O&M Priority Table (Top 10 Ranked Inverters)")
+    with col_t2:
+        # Generate CSV / HTML / Markdown text representation for download or simple ReportLab PDF
+        from html import escape
+        html_report = f"""
+        <html>
+        <head><style>body {{ font-family: Arial, sans-serif; margin: 30px; }} h2 {{ color: #d9534f; }} table {{ border-collapse: collapse; width: 100%; margin-top: 20px; }} th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }} th {{ background-color: #f2f2f2; }}</style></head>
+        <body>
+            <h2>MGEN Renewables - Bulacan Solar Daily Inverter Screening Report</h2>
+            <p><b>Operating Date:</b> {report_date_str}</p>
+            <hr>
+            <h3>Executive Summary</h3>
+            <ul>
+                <li>Total Inverters Monitored: 18 Units</li>
+                <li>Negative Anomalies Flagged (Z &lt; -3.5): {total_negative_anomalies} Intervals</li>
+                <li>Highest Priority Unit: {top_1_inverter}</li>
+            </ul>
+            <h3>Top 10 Fleet O&M Priority Table</h3>
+            {top_10_df.to_html(index=True, classes='table')}
+            <br>
+            <p><i>Generated automatically via MGEN Renewables SCADA Analytics Pipeline.</i></p>
+        </body>
+        </html>
+        """
+        
+        st.download_button(
+            label="📥 Download Report (HTML/PDF)",
+            data=html_report,
+            file_name=f"Bulacan_Solar_Screening_{report_date_str.replace(', ', '_').replace(' ', '_')}.html",
+            mime="text/html",
+            help="Downloads the official daily screening report for archiving and O&M record-keeping."
+        )
+
     st.dataframe(top_10_df, use_container_width=True)
 
     # =========================================================================
