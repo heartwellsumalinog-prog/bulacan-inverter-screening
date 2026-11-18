@@ -115,7 +115,7 @@ if uploaded_files:
             normalized_power = pd.DataFrame(index=power_kw_day.index)
             for inv in power_kw_day.columns:
                 dc_cap = DC_CAPACITIES.get(inv, 4.4505)
-                # STEP 1: Preserves distinction between true zero and missing measurements (no fillna(0))
+                # Preserves distinction between true zero and missing measurements
                 normalized_power[inv] = (power_kw_day[inv] / 1000.0) / dc_cap
 
             peer_median_norm = normalized_power.median(axis=1)
@@ -123,7 +123,6 @@ if uploaded_files:
             mad_norm = residuals_norm.abs().median(axis=1).replace(0, 1e-6).clip(lower=0.001)
             residual_median_norm = residuals_norm.median(axis=1)
             robust_z = 0.6745 * residuals_norm.sub(residual_median_norm, axis=0).div(mad_norm, axis=0)
-            # STEP 2: Removed robust_z.fillna(0.0) to keep missing data distinct
 
             valid_sun_mask = (peer_median_norm > 0.02).to_numpy()
             eligible_intervals_mask = valid_sun_mask & (~curtailment_active_mask)
@@ -140,7 +139,7 @@ if uploaded_files:
                 dc_cap = DC_CAPACITIES.get(inv, 4.4505)
                 deficit_series = np.clip(median_series - ratio_series, 0, None) * dc_cap * 1000.0
                 
-                # STEP 3: Strict per-inverter finite check for available measurements
+                # Strict per-inverter finite check for available measurements
                 inv_eligible_mask = (
                     eligible_intervals_mask
                     & np.isfinite(z_series)
@@ -148,7 +147,6 @@ if uploaded_files:
                 )
                 inv_eligible_count = int(inv_eligible_mask.sum())
 
-                # STEP 4: Refined severity and statistics block
                 if inv_eligible_count == 0:
                     flags_count = 0
                     pct_active = np.nan
@@ -288,7 +286,6 @@ if uploaded_files:
 
                 for idx, inv in enumerate(top_5_invs):
                     norm_vals = rec['normalized_power'][inv]
-                    # Respect per-inverter finite eligibility mask during scatter plotting
                     z_series = rec['robust_z'][inv].to_numpy()
                     inv_elig = rec['eligible_mask'] & np.isfinite(z_series) & np.isfinite(norm_vals.to_numpy())
                     flag_mask = (z_series < -3.5) & inv_elig
@@ -298,7 +295,8 @@ if uploaded_files:
                     
                     if flag_mask.any():
                         flagged_labels = [rec['time_labels'][i] for i, is_flagged in enumerate(flag_mask) if is_flagged]
-                        flagged_values = norm_vals.iloc[flag_mask.values].values
+                        # FIXED: Using clean boolean indexing instead of .values attribute on NumPy array
+                        flagged_values = norm_vals[flag_mask].values
                         ax2.scatter(flagged_labels, flagged_values, color='#9c0006', s=30, marker='X', linewidths=0.8, zorder=6)
 
                 ax2.set_xlabel('Time of Day (15-Min Intervals)', fontweight='bold')
