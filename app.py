@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import re
+import os
 
 # =========================================================================
 # PAGE CONFIGURATION
@@ -35,7 +36,16 @@ st.sidebar.header("📁 Data Ingestion")
 uploaded_file = st.sidebar.file_uploader("Upload Daily SCADA Report (.xls / .xlsx)", type=["xls", "xlsx"])
 
 if uploaded_file is not None:
-    # 1. Load Data
+    # 1. Extract Operating Date from Filename (e.g. "August 07, 2026")
+    filename = uploaded_file.name
+    date_match = re.search(r'(August\s+\d{1,2},\s+\d{4})', filename, re.IGNORECASE)
+    if date_match:
+        report_date_str = date_match.group(1)
+    else:
+        # Fallback if filename doesn't match standard naming
+        report_date_str = filename.replace('.xls', '').replace('.xlsx', '')
+
+    # 2. Load Data
     @st.cache_data
     def load_data(file):
         df_raw = pd.read_excel(file, sheet_name="Inverter Generation Report", header=None)
@@ -43,18 +53,8 @@ if uploaded_file is not None:
         return df_raw, df_gen_raw
 
     df_raw, df_gen_raw = load_data(uploaded_file)
-    
-    # Extract Report Date from Row 0 if available
-    report_date_str = "Previous Operating Day"
-    try:
-        cell_val = str(df_raw.iloc[0, 0])
-        date_match = re.search(r'(\d{4}[-/]\d{2}[-/]\d{2}|\d{2}[-/]\d{2}[-/]\d{4})', cell_val)
-        if date_match:
-            report_date_str = date_match.group(1)
-    except Exception:
-        pass
 
-    # 2. Parse Headers & Time for Inverter Report
+    # 3. Parse Headers & Time for Inverter Report
     inverter_names_row = df_raw.iloc[1].ffill()
     parameters_row = df_raw.iloc[2]
 
@@ -85,7 +85,7 @@ if uploaded_file is not None:
     df_data = df_data.dropna(subset=['TimeOffset']).sort_values('TimeOffset')
     df_data.set_index('TimeOffset', inplace=True)
 
-    # 3. Parse Irradiance from Generation Report Sheet
+    # 4. Parse Irradiance from Generation Report Sheet
     df_gen = df_gen_raw.iloc[6:].copy()
     def parse_t(t_str):
         match = re.match(r'^(\d+)Time(\d+)Minutes$', str(t_str).strip())
@@ -98,19 +98,24 @@ if uploaded_file is not None:
     df_gen = df_gen.dropna(subset=['TimeOffset']).set_index('TimeOffset')
 
     # =========================================================================
-    # EXECUTIVE HEADER SECTION
+    # EXECUTIVE HEADER SECTION (Logo on left, Title center, Date bottom-left)
     # =========================================================================
-    head_col1, head_col2 = st.columns([0.15, 0.85])
+    head_col1, head_col2 = st.columns([0.22, 0.78])
     with head_col1:
-        st.markdown("### ⚡ MGEN")
-        st.markdown("**MGEN Renewables**")
+        logo_path = "mgen_logo.png"  # Make sure your logo image is uploaded to GitHub with this filename
+        if os.path.exists(logo_path):
+            st.image(logo_path, width=180)
+        else:
+            st.markdown("### ⚡ MGEN Renewables")
+            st.warning("⚠️ Logo image `mgen_logo.png` not found in GitHub repository.")
+            
     with head_col2:
         st.markdown("## Bulacan Solar — Daily Inverter Screening Report")
-        st.markdown(f"**Operating Date:** {report_date_str} | **Performance & Analytics Engineering**")
+        st.markdown(f"**Operating Date:** {report_date_str}")
     
     st.markdown("---")
 
-    # 4. Extract Active Power & Daylight Filter
+    # 5. Extract Active Power & Daylight Filter
     p_cols = [c for c in df_data.columns if 'P(kW)' in c]
     power_kw = df_data[p_cols].apply(pd.to_numeric, errors='coerce')
     power_kw.columns = [c.split('_')[0] for c in p_cols]
@@ -121,10 +126,9 @@ if uploaded_file is not None:
     power_kw_day = power_kw.loc[daylight_mask]
     time_labels_day = [df_data.loc[td, 'TimeLabel'] for td in power_kw_day.index]
     
-    # Align irradiance with daylight inverter timestamps
     irradiance_day = df_gen['Irradiance'].reindex(power_kw_day.index).fillna(0)
 
-    # 5. Curtailment & Robust Z-Score Engine (Threshold at -3.5)
+    # 6. Curtailment & Robust Z-Score Engine (Threshold at -3.5)
     total_plant_mw_day = power_kw_day.sum(axis=1) / 1000.0
     curtailment_active_mask = (total_plant_mw_day >= 54.5).to_numpy()
 
@@ -216,7 +220,6 @@ if uploaded_file is not None:
     line1 = ax1.plot(time_labels_day, total_plant_mw_day, color=color_pow, linewidth=2.5, label='Total Plant Active Power')
     line_limit = ax1.axhline(y=55.0, color='red', linestyle='--', linewidth=1.5, label='Grid Export Limit (55 MWac Cap)')
     
-    # Fill curtailment with explicit label for the legend
     fill_curt = None
     if curtailment_active_mask.any():
         fill_curt = ax1.fill_between(time_labels_day, 0, 55, where=curtailment_active_mask, color='red', alpha=0.12, label='Active Curtailment Window')
@@ -232,7 +235,6 @@ if uploaded_file is not None:
     ax1_irr.tick_params(axis='y', labelcolor=color_irr)
     ax1_irr.grid(False)
 
-    # Combine all 4 legend elements smoothly
     lines_p1 = line1 + line2 + [line_limit] + ([fill_curt] if fill_curt is not None else [])
     labels_p1 = [l.get_label() for l in lines_p1]
     ax1.legend(lines_p1, labels_p1, loc='lower right', frameon=True, fontsize=9)
