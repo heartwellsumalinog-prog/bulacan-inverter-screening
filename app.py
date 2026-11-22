@@ -110,7 +110,7 @@ if uploaded_files:
             irradiance_day = df_gen['Irradiance'].reindex(power_kw_day.index).fillna(0)
 
             total_plant_mw_day = power_kw_day.sum(axis=1) / 1000.0
-            curtailment_active_mask = (total_plant_mw_day >= 54.5).to_numpy()
+            curtailment_active_mask = (total_plant_mw_day >= 55).to_numpy()
 
             normalized_power = pd.DataFrame(index=power_kw_day.index)
             for inv in power_kw_day.columns:
