@@ -115,7 +115,6 @@ if uploaded_files:
             normalized_power = pd.DataFrame(index=power_kw_day.index)
             for inv in power_kw_day.columns:
                 dc_cap = DC_CAPACITIES.get(inv, 4.4505)
-                # Preserves distinction between true zero and missing measurements
                 normalized_power[inv] = (power_kw_day[inv] / 1000.0) / dc_cap
 
             peer_median_norm = normalized_power.median(axis=1)
@@ -139,7 +138,6 @@ if uploaded_files:
                 dc_cap = DC_CAPACITIES.get(inv, 4.4505)
                 deficit_series = np.clip(median_series - ratio_series, 0, None) * dc_cap * 1000.0
                 
-                # Strict per-inverter finite check for available measurements
                 inv_eligible_mask = (
                     eligible_intervals_mask
                     & np.isfinite(z_series)
@@ -154,25 +152,21 @@ if uploaded_files:
                     max_deficit = np.nan
                     severity = "NO DATA"
                     sev_rank = 4
-
                 else:
                     flag_mask = (z_series < -3.5) & inv_eligible_mask
                     flags_count = flag_mask.sum()
                     total_negative_anomalies += flags_count
 
                     pct_active = (flags_count / inv_eligible_count) * 100.0
-
                     worst_z = z_series[inv_eligible_mask].min()
                     max_deficit = deficit_series[inv_eligible_mask].max()
 
                     if flags_count > 10 or worst_z < -10:
                         severity = "HIGH PRIORITY"
                         sev_rank = 1
-
                     elif flags_count > 0 or worst_z < -3.5:
                         severity = "MONITOR"
                         sev_rank = 2
-
                     else:
                         severity = "NORMAL"
                         sev_rank = 3
@@ -235,7 +229,7 @@ if uploaded_files:
 
         st.markdown("---")
 
-        tab_daily, tab_weekly = st.tabs(["📅 Daily Screening Report", "📊 Multi-Day Fleet Summary"])
+        tab_daily, tab_weekly = st.tabs(["📅 Daily Screening Report", "📊 Weekly / Multi-Day Fleet Summary"])
 
         # -------------------------------------------------------------------------
         # TAB 1: DAILY REPORT VIEW
@@ -246,7 +240,8 @@ if uploaded_files:
 
             if selected_date:
                 rec = daily_records[selected_date]
-                top_10_df = rec['priority_df'].head(10)
+                full_df = rec['priority_df']
+                top_10_df = full_df.head(10)
                 top_1_inv = top_10_df.iloc[0]['Inverter'] if len(top_10_df) > 0 else "None"
 
                 m1, m2, m3 = st.columns(3)
@@ -295,7 +290,6 @@ if uploaded_files:
                     
                     if flag_mask.any():
                         flagged_labels = [rec['time_labels'][i] for i, is_flagged in enumerate(flag_mask) if is_flagged]
-                        # FIXED: Using clean boolean indexing instead of .values attribute on NumPy array
                         flagged_values = norm_vals[flag_mask].values
                         ax2.scatter(flagged_labels, flagged_values, color='#9c0006', s=30, marker='X', linewidths=0.8, zorder=6)
 
@@ -313,12 +307,61 @@ if uploaded_files:
                 st.subheader("📋 Fleet O&M Priority Table")
                 st.dataframe(top_10_df, use_container_width=True)
 
+                # -------------------------------------------------------------
+                # CLOSED-LOOP O&M ACTION & DISPATCH PLAYBOOK (DYNAMIC + SOP)
+                # -------------------------------------------------------------
+                st.markdown("---")
+                st.subheader("🛠️ Closed-Loop O&M Action & Dispatch Protocol")
+
+                hp_units = full_df[full_df['Severity'] == 'HIGH PRIORITY']['Inverter'].tolist()
+                mon_units = full_df[full_df['Severity'] == 'MONITOR']['Inverter'].tolist()
+                nd_units = full_df[full_df['Severity'] == 'NO DATA']['Inverter'].tolist()
+
+                col_hp, col_mon, col_norm = st.columns(3)
+
+                with col_hp:
+                    st.error(f"🔴 **HIGH PRIORITY ({len(hp_units)} Units)**")
+                    if hp_units:
+                        st.markdown(f"**Target Units:** `{', '.join(hp_units)}`")
+                    else:
+                        st.markdown("**Target Units:** None today")
+                    st.markdown("""
+                    **Required O&M Action (Same-Day):**
+                    1. **Verify Context:** Cross-check flagged timestamps against Outage/Alarm log & SCADA string currents.
+                    2. **Dispatch Inspection:** Issue field ticket if unexplained by known grid/fault logs (check DC fuses, MPPT inputs, cooling/filters, thermal spots).
+                    3. **Close Loop:** Confirm return to `NORMAL` on next day's SCADA upload before closing ticket.
+                    """)
+
+                with col_mon:
+                    st.warning(f"🟠 **MONITOR ({len(mon_units)} Units)**")
+                    if mon_units:
+                        st.markdown(f"**Target Units:** `{', '.join(mon_units)}`")
+                    else:
+                        st.markdown("**Target Units:** None today")
+                    st.markdown("""
+                    **Required O&M Action (Trend Watch):**
+                    1. **Persistence Check:** Review **Weekly / Multi-Day Summary** tab for recurring flags.
+                    2. **3-Day Escalation Rule:** Promote to field inspection ticket if flagged for **≥ 3 consecutive days** (catches gradual soiling or string drift).
+                    """)
+
+                with col_norm:
+                    st.success("🟢 **NORMAL & TELEMETRY CHECK**")
+                    if nd_units:
+                        st.markdown(f"⚠️ **NO DATA Units:** `{', '.join(nd_units)}` — Verify SCADA comms/polling.")
+                    else:
+                        st.markdown("**NO DATA Units:** None (100% telemetry coverage)")
+                    st.markdown("""
+                    **Required O&M Action:**
+                    * **NORMAL:** Operating within expected peer spread. No field dispatch required.
+                    * **NO DATA:** Do not assume healthy; escalate missing intervals to SCADA/IT technician.
+                    """)
+
         # -------------------------------------------------------------------------
         # TAB 2: WEEKLY / MULTI-DAY FLEET SUMMARY
         # -------------------------------------------------------------------------
         with tab_weekly:
             st.subheader("📊 Fleet Multi-Day Summary & Chronic Anomaly Ranking")
-            st.markdown("This summary aggregates all uploaded daily reports to identify chronic, recurring underperforming inverters across the fleet—supporting your weekly/monthly O&M maintenance planning.")
+            st.markdown("This summary aggregates all uploaded daily reports to identify chronic, recurring underperforming inverters across the fleet—supporting your weekly O&M maintenance planning.")
 
             fleet_totals = {}
             for date_str, rec in daily_records.items():
@@ -351,9 +394,13 @@ if uploaded_files:
             ax_sum.invert_yaxis()
             ax_sum.grid(axis='x', linestyle='--', alpha=0.5)
 
+            # Add extra right-side headroom so the top bar label never touches the border
+            max_val = df_summary['Total Anomaly Intervals'].max() if len(df_summary) > 0 else 10
+            ax_sum.set_xlim(0, max(max_val * 1.18, 5))
+
             for bar in bars:
                 width = bar.get_width()
-                ax_sum.text(width + 0.5, bar.get_y() + bar.get_height()/2, f'{int(width)} Intervals', va='center', ha='left', fontsize=10, fontweight='bold', color='#333333')
+                ax_sum.text(width + (max_val * 0.015 if max_val > 0 else 0.2), bar.get_y() + bar.get_height()/2, f'{int(width)} Intervals', va='center', ha='left', fontsize=10, fontweight='bold', color='#333333')
 
             plt.tight_layout()
             st.pyplot(fig_sum)
@@ -363,4 +410,4 @@ if uploaded_files:
     else:
         st.warning("⚠️ No valid daily reports were successfully parsed from the uploaded files.")
 else:
-    st.info("👈 Please upload multiple daily SCADA report Excel files in the sidebar to activate the multi-day fleet platform and weekly/monthly summary analytics.")
+    st.info("👈 Please upload multiple daily SCADA report Excel files in the sidebar to activate the multi-day fleet platform and weekly summary analytics.")
