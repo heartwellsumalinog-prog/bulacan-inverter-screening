@@ -235,7 +235,7 @@ if uploaded_files:
 
         st.markdown("---")
 
-        tab_daily, tab_weekly = st.tabs(["📅 Daily Screening Report", "📊 Weekly / Multi-Day Fleet Summary"])
+        tab_daily, tab_weekly = st.tabs(["📅 Daily Screening Report", "📊 Multi-Day Fleet Summary"])
 
         # -------------------------------------------------------------------------
         # TAB 1: DAILY REPORT VIEW
@@ -318,7 +318,7 @@ if uploaded_files:
         # -------------------------------------------------------------------------
         with tab_weekly:
             st.subheader("📊 Fleet Multi-Day Summary & Chronic Anomaly Ranking")
-            st.markdown("This summary aggregates all uploaded daily reports to identify chronic, recurring underperforming inverters across the fleet—supporting your weekly O&M maintenance planning.")
+            st.markdown("This summary aggregates all uploaded daily reports to identify chronic, recurring underperforming inverters across the fleet—supporting your weekly/monthly O&M maintenance planning.")
 
             fleet_totals = {}
             for date_str, rec in daily_records.items():
@@ -363,4 +363,4 @@ if uploaded_files:
     else:
         st.warning("⚠️ No valid daily reports were successfully parsed from the uploaded files.")
 else:
-    st.info("👈 Please upload multiple daily SCADA report Excel files in the sidebar to activate the multi-day fleet platform and weekly summary analytics.")
+    st.info("👈 Please upload multiple daily SCADA report Excel files in the sidebar to activate the multi-day fleet platform and weekly/monthly summary analytics.")
